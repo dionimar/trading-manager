@@ -79,11 +79,9 @@ def fill_with(amountt=None, options=None):
 def balances(data=None, pair=None):
     sells = data[data.asset_sell == pair]
     buys = data[data.asset_buy == pair]
-    print(buys)
-    print(sells)
     for idx, item in sells.iterrows():
         amount = item["amount_sell"]
-        origin = buys[buys.time < item["time"]]
+        origin = buys[buys.time < item["time"]].sort_values(by="time", ascending=True)
         computed_sells = fill_with(abs(amount), origin)
         for item_dist in computed_sells:
             index, diff = item_dist["idx"], item_dist["quantity"]
@@ -109,11 +107,11 @@ if __name__ == '__main__':
 
     df = join_operations(changes)  
     
-    # df = df[(df.asset_buy == "BNC") | (df.asset_sell == "BNC")]
-    # #print(data)
+    df = df[(df.asset_buy == "BNC") | (df.asset_sell == "BNC")]
 
     df["founds_come_from"] = None
     assets = list_assets(df)
+    print(assets)
     
     for asset in assets:
         print("Processing asset {}".format(asset))
