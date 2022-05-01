@@ -4,17 +4,16 @@ from dateutil.parser import parse
 import pandas as pd
 
 
-def load_file(filename=None):
-    return pd.read_csv(filename)
+def load_file(filename=None, **kwargs):
+    return pd.read_csv(filename, **kwargs)
 
 def prepare(df=None):
     df["operation"] = df["amount"].apply(lambda x: "sell" if x < 0 else "buy")
     df["time"] = pd.to_datetime(df["time"])
-    df["timestamp"] = df["time"].apply(lambda x: int(x.replace(second=0).timestamp()))
     for col in ["txid", "refid", "type", "subtype", "asset", "operation"]:
         df[col] = df[col].astype("string")
     df.drop(columns=["subtype", "aclass", "balance"], inplace=True)
-    df.set_index("refid", inplace=True)
+    #df.set_index("refid", inplace=True)
     return df
 
 def split_types(df=None):
@@ -34,8 +33,8 @@ def split_types(df=None):
 def join_operations(df=None):
     sells = df[df["operation"] == "sell"]
     buys = df[df["operation"] == "buy"]
-    joined = buys.join(
-        sells,
+    joined = buys.set_index("refid").join(
+        sells.set_index("refid"),
         on="refid",
         how="left",
         lsuffix="_buy",
@@ -48,11 +47,10 @@ def join_operations(df=None):
             "txid_buy",
             "txid_sell",
             "time_sell",
-            "timestamp_sell",
             "operation_buy",
             "operation_sell"
         ]
-    ).rename(columns={"time_buy": "time", "timestamp_buy": "timestamp"})
+    ).rename(columns={"time_buy": "time"})
 
 
 
@@ -61,7 +59,6 @@ def join_operations(df=None):
 
     
 def fill_with(amountt=None, options=None):
-    # Sort by time, asc
     assignment = []
     quantity_to_fill = amountt
     for idx, item in options.iterrows():
@@ -95,8 +92,37 @@ def list_assets(data=None):
     assets = assets_l.values.tolist() + assets_r.values.tolist()
     return list(set(assets))
 
-    
 
+def build_assets_prices(assets_dict=None):
+    dfs = []
+    for key, value in assets_dict.items():
+        if value is not None:
+            df = load_file(
+                value,
+                names=["timestamp", "open", "high", "low", "close", "volume", "trades"]
+            )
+            df["asset"] = key
+            df["asset"] = df["asset"].astype("string")
+            dfs.append(df)
+    return pd.concat(dfs)
+
+def attach_price(data=None, prices=None):
+    data["timestamp"] = data["time"].apply(lambda x: int(x.replace(second=0).timestamp()))
+    assets = list(set(data["asset"].tolist()))
+    dfs = []
+    for asset in assets:
+        joined = data[data["asset"] == asset].set_index("timestamp") \
+            .join(
+                prices[prices["asset"] == asset].drop(columns=["asset"]).set_index("timestamp"),
+                on="timestamp",
+                how="left"
+            )
+        joined.reset_index(inplace=True)
+        dfs.append(
+            joined.rename(columns={"close": "price_EUR"}) \
+            .drop(columns=["open", "high", "low", "volume", "trades", "timestamp"])
+        )
+    return pd.concat(dfs)
 
 if __name__ == '__main__':
 
@@ -105,19 +131,36 @@ if __name__ == '__main__':
 
     transactions, changes, staks, deposits = split_types(data)
 
-    df = join_operations(changes)  
-    
-    df = df[(df.asset_buy == "BNC") | (df.asset_sell == "BNC")]
+    df = changes
 
+    assets_files = {
+        "USDT": "Kraken_OHLCVT/USDTEUR_1.csv",
+        "GRT": "Kraken_OHLCVT/GRTEUR_1.csv",
+        "ADA": "Kraken_OHLCVT/ADAEUR_1.csv",
+        "OGN": "Kraken_OHLCVT/OGNEUR_1.csv",
+        "OXT": "Kraken_OHLCVT/OXTEUR_1.csv",
+        "REN": "Kraken_OHLCVT/RENEUR_1.csv",
+        "XXBT": "Kraken_OHLCVT/XBTEUR_1.csv",
+        "ZEUR": None,
+        "XETH": "Kraken_OHLCVT/ETHEUR_1.csv",
+        "BNC": "Kraken_OHLCVT/BNCEUR_1.csv",
+        "XLTC": "Kraken_OHLCVT/LTCEUR_1.csv"
+    }
+
+    assets_prices = build_assets_prices(assets_dict=assets_files)
+
+    df = attach_price(data=df, prices=assets_prices)
+    print(df)
+    df = join_operations(df)  
+    
+    
     df["founds_come_from"] = None
     assets = list_assets(df)
-    print(assets)
-    
     for asset in assets:
         print("Processing asset {}".format(asset))
-        balances(data=df, pair=asset)
+        balances(data=df, pair=asset) 
 
-    #print(df.to_string())
-    print(df)
+    # #print(df.to_string())
+    print(df)   
 
     
