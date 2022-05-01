@@ -34,8 +34,6 @@ def split_types(df=None):
 def join_operations(df=None):
     sells = df[df["operation"] == "sell"]
     buys = df[df["operation"] == "buy"]
-    print(buys.dtypes)
-    print(sells.dtypes)
     joined = buys.join(
         sells,
         on="refid",
@@ -79,11 +77,8 @@ def fill_with(amountt=None, options=None):
     return list(filter(lambda x: abs(x["quantity"]) > 0, assignment))
 
 def balances(data=None, pair=None):
-    data["founds_come_from"] = None
     sells = data[data.asset_sell == pair]
-    #sells.set_index("refid", inplace=True)
     buys = data[data.asset_buy == pair]
-    #buys.set_index("refid", inplace=True)
     print(buys)
     print(sells)
     for idx, item in sells.iterrows():
@@ -93,7 +88,6 @@ def balances(data=None, pair=None):
         for item_dist in computed_sells:
             index, diff = item_dist["idx"], item_dist["quantity"]
             buys.at[index, "amount_buy"] -= diff
-        print(computed_sells)
         data.at[idx, "founds_come_from"] = computed_sells
 
 
@@ -108,32 +102,24 @@ def list_assets(data=None):
 
 if __name__ == '__main__':
 
-    #sells = load_file(filename="computed_sells/part-00000-a66c1803-d568-4b0e-a3ca-b64af5f44279-c000.json")
-    #sells = list(filter(lambda x: x["asset_left"] == "BNC" or x["asset_right"] == "BNC", sells))
     data = load_file("ledgers.csv")
     data = prepare(data)
-    print(data)
 
     transactions, changes, staks, deposits = split_types(data)
 
-    df = join_operations(changes)
-    print(df)
-
+    df = join_operations(changes)  
     
-    # data = pd.read_json("computed_sells/part-00000-a66c1803-d568-4b0e-a3ca-b64af5f44279-c000.json", orient="records", lines=True)
-    # data.drop(labels=["balance_left", "balance_right", "txid_left", "txid_right", "pair"], axis=1, inplace=True)
-    # data.set_index("refid", inplace=True)
-    
-    
-    
-    df = df[(df.asset_buy == "BNC") | (df.asset_sell == "BNC")]
+    # df = df[(df.asset_buy == "BNC") | (df.asset_sell == "BNC")]
     # #print(data)
 
+    df["founds_come_from"] = None
     assets = list_assets(df)
     
-    #for asset in assets:
-    balances(data=df, pair="BNC")
+    for asset in assets:
+        print("Processing asset {}".format(asset))
+        balances(data=df, pair=asset)
 
+    #print(df.to_string())
     print(df)
 
     
