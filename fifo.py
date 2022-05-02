@@ -144,6 +144,10 @@ class KrakenDF:
         self.changes = self.changes.join(assets_foundings, on="refid", how="left")
         return self
 
+    def calculate_costs(self):
+        self.changes["buy_cost"] = self.changes["quantity"] * self.changes["price_bought_EUR"]
+        self.changes["sell_cost"] = self.changes[""]
+
     
 
 
@@ -205,12 +209,10 @@ if __name__ == '__main__':
 
     assets_prices = build_assets_prices(assets_dict=assets_files)
 
-
     krakendf = KrakenDF.from_file("ledgers.csv")
     krakendf.attach_prices(prices=assets_prices) \
             .agg_transactions() \
             .inventory_fifo()
-    
         
     # #print(df.to_string())
     print(krakendf.changes)
