@@ -62,7 +62,6 @@ class KrakenDF:
         df.loc[df["asset"] == "ZEUR", "price_EUR"] = 1
         df.set_index("refid", inplace=True)
         self.changes = df
-        print(self.changes.to_string())
         return self
         
     def agg_transactions(self):
@@ -170,9 +169,24 @@ class KrakenDF:
         # Sell costs comes from the asset (usually EUR/USDT) bought for each currency
         df["sell_cost"] = df["amount_buy"] * df["price_EUR_buy"]
         self.changes = self.changes.join(df.set_index("refid")[["sell_cost", "buy_cost"]], on="refid", how="left")
+        return self
+
+    def build_declarables(self):
         self.declarable_assets = self.changes[self.changes["asset_sell"] != "ZEUR"]
         self.declarable_assets["gain"] = self.declarable_assets["sell_cost"] - self.declarable_assets["buy_cost"]
+        self.declarable_assets.drop(
+            columns=[
+                "refid_foundings",
+                "quantity",
+                "price_bought_EUR",
+                "sell_cost",
+                "buy_cost"
+            ],
+            inplace=True
+        )
+        self.declarable_assets.drop_duplicates(inplace=True)
         self.declarable_assets.sort_values(by="time", ascending=True)
+        return self
     
 
 
@@ -239,7 +253,9 @@ if __name__ == '__main__':
             .agg_transactions() \
             .inventory_fifo()
 
-    krakendf.calculate_costs()
+    krakendf.calculate_costs() \
+            .build_declarables()
+    
     df = krakendf.declarable_assets
     print(df)
     # #print(df.to_string())
