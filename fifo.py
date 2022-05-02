@@ -8,15 +8,18 @@ def load_file(filename=None, **kwargs):
     return pd.read_csv(filename, **kwargs)
 
 def prepare(df=None):
+    """Creates operation column (buy or sell), casts types and drops unused cols.
+    """
     df["operation"] = df["amount"].apply(lambda x: "sell" if x < 0 else "buy")
     df["time"] = pd.to_datetime(df["time"])
     for col in ["txid", "refid", "type", "subtype", "asset", "operation"]:
         df[col] = df[col].astype("string")
     df.drop(columns=["subtype", "aclass", "balance"], inplace=True)
-    #df.set_index("refid", inplace=True)
     return df
 
 def split_types(df=None):
+    """Splits data frame on transactions, changes (trades), stakings and deposits.
+    """
     transactions = df[df["txid"].notnull()]
     changes = transactions[
         (transactions["type"] != "transfer") &
@@ -31,6 +34,8 @@ def split_types(df=None):
     return transactions, changes, staks, deposits
 
 def join_operations(df=None):
+    """Self joins to link assets sells with buys.
+    """
     sells = df[df["operation"] == "sell"]
     buys = df[df["operation"] == "buy"]
     joined = buys.set_index("refid").join(
@@ -68,23 +73,48 @@ def fill_with(amountt=None, options=None):
         else:
             assignment.append({"idx": idx,  "quantity": item["amount_buy"]})
             quantity_to_fill -= item["amount_buy"]
-
         if quantity_to_fill == 0:
             break
     return list(filter(lambda x: abs(x["quantity"]) > 0, assignment))
 
 def balances(data=None, pair=None):
-    sells = data[data.asset_sell == pair]
-    buys = data[data.asset_buy == pair]
+    """Returns a df with refid as key and columns for each refid which the founds come from
+    also with quantity.
+    """
+    sells = data[data["asset_sell"] == pair]
+    buys = data[data["asset_buy"] == pair]
+    df_refs = []
     for idx, item in sells.iterrows():
         amount = item["amount_sell"]
-        origin = buys[buys.time < item["time"]].sort_values(by="time", ascending=True)
+        origin = buys[buys["time"] < item["time"]].sort_values(by="time", ascending=True)
         computed_sells = fill_with(abs(amount), origin)
+        if computed_sells == []:
+            continue
         for item_dist in computed_sells:
             index, diff = item_dist["idx"], item_dist["quantity"]
             buys.at[index, "amount_buy"] -= diff
-        data.at[idx, "founds_come_from"] = computed_sells
+            item_dist["refid"] = idx
+        df_ref = pd.DataFrame(computed_sells)
+        df_ref["idx"] = df_ref["idx"].astype("string")
+        df_refs.append(df_ref)
+    if df_refs == []:
+        return None
+    return pd.concat(df_refs)
 
+def attach_buy_prices(data=None, asset_founding=None):
+    """Data comes with refid index"""
+    if asset_founding is None:
+        return None
+    asset_indexed = asset_founding.reset_index() \
+        .rename(columns={"refid": "refid_origin", "idx": "refid"})
+    asset_indexed = asset_indexed.set_index("refid")
+    data_ = data[["price_EUR_buy"]]
+    joined = asset_indexed.join(data_, on="refid", how="left") \
+        .reset_index() \
+        .rename(columns={"refid": "idx", "refid_origin": "refid", "price_EUR_buy": "price_bought_EUR"}) \
+        .set_index("refid") \
+        .drop(columns="index")
+    return joined
 
 def list_assets(data=None):
     assets_l = data["asset_buy"]
@@ -150,17 +180,24 @@ if __name__ == '__main__':
     assets_prices = build_assets_prices(assets_dict=assets_files)
 
     df = attach_price(data=df, prices=assets_prices)
+    df = join_operations(df)
+    
+    df = df[(df["asset_buy"] == "BNC") | (df["asset_sell"] == "BNC")]
     print(df)
-    df = join_operations(df)  
     
-    
-    df["founds_come_from"] = None
     assets = list_assets(df)
-    for asset in assets:
+    dfs = []
+    for asset in ["BNC"]:
         print("Processing asset {}".format(asset))
-        balances(data=df, pair=asset) 
+        asset_founding = balances(data=df, pair=asset)
+        asset_founding = attach_buy_prices(data=df, asset_founding=asset_founding)
+        dfs.append(asset_founding)
+    assets_foundings = pd.concat(dfs)
 
+    df = df.join(assets_foundings, on="refid", how="left")
+        
     # #print(df.to_string())
-    print(df)   
+    print(df)
+
 
     
