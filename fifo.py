@@ -13,21 +13,22 @@ class KrakenDF:
     def __init__(self, df=None):
         self.df = df
         self.transactions = df[df["txid"].notnull()]
-        # self.changes = self.transactions[
-        #     (self.transactions["type"] != "transfer") &
-        #     (self.transactions["type"] != "staking") &
-        #     (self.transactions["type"] != "deposit")
-        # ]
         self.changes = self.transactions[
+            (self.transactions["type"] != "transfer") &
             (self.transactions["type"] != "staking") &
-            (self.transactions["type"] != "transfer")
+            (self.transactions["type"] != "deposit")
         ]
+        # self.changes = self.transactions[
+        #     (self.transactions["type"] != "staking") &
+        #     (self.transactions["type"] != "transfer")
+        # ]
         self.staks = self.transactions[
             (self.transactions["type"] == "transfer") |
             (self.transactions["type"] == "staking")
         ]
         self.deposits = self.transactions[self.transactions["type"] == "deposit"]
         self.assets = list(set(self.changes["asset"].tolist()))
+        self.declarable_assets = None
         
     @classmethod
     def from_file(KrakenDF, filename=None):
@@ -61,6 +62,7 @@ class KrakenDF:
         df.loc[df["asset"] == "ZEUR", "price_EUR"] = 1
         df.set_index("refid", inplace=True)
         self.changes = df
+        print(self.changes.to_string())
         return self
         
     def agg_transactions(self):
@@ -109,7 +111,7 @@ class KrakenDF:
         """Returns a df with refid as key and columns for each refid which the founds come from
         also with quantity.
         """
-        sells = self.changes[self.changes["asset_sell"] == pair]
+        sells = self.changes[self.changes["asset_sell"] == pair].sort_values(by="time", ascending=True)
         buys = self.changes[self.changes["asset_buy"] == pair]
         df_refs = []
         for idx, item in sells.iterrows():
@@ -118,7 +120,10 @@ class KrakenDF:
             computed_sells = fill_with(abs(amount), origin)
             
             if computed_sells == []:
-                logging.error("ERROR, sells not linked to foundings for asset {}".format(pair))
+                if pair != "ZEUR":
+                    logging.error("ERROR, sells not linked to foundings for asset {}".format(pair))
+                    print(buys)
+                    print(sells)
                 continue
             # Update buys with already used balances
             for item_dist in computed_sells:
@@ -145,9 +150,29 @@ class KrakenDF:
         return self
 
     def calculate_costs(self):
-        self.changes["buy_cost"] = self.changes["quantity"] * self.changes["price_bought_EUR"]
-        self.changes["sell_cost"] = self.changes[""]
-
+        df = self.changes.reset_index()
+        # Buy costs comes from fifo foundings
+        df["buy_cost"] = df["quantity"] * df["price_bought_EUR"]
+        df = df.groupby(
+            [
+                "refid",
+                "time",
+                "asset_buy",
+                "amount_buy",
+                "fee_buy",
+                "price_EUR_buy",
+                "asset_sell",
+                "amount_sell",
+                "fee_sell",
+                "price_EUR_sell"
+            ]
+        ).sum().reset_index()
+        # Sell costs comes from the asset (usually EUR/USDT) bought for each currency
+        df["sell_cost"] = df["amount_buy"] * df["price_EUR_buy"]
+        self.changes = self.changes.join(df.set_index("refid")[["sell_cost", "buy_cost"]], on="refid", how="left")
+        self.declarable_assets = self.changes[self.changes["asset_sell"] != "ZEUR"]
+        self.declarable_assets["gain"] = self.declarable_assets["sell_cost"] - self.declarable_assets["buy_cost"]
+        self.declarable_assets.sort_values(by="time", ascending=True)
     
 
 
@@ -213,9 +238,12 @@ if __name__ == '__main__':
     krakendf.attach_prices(prices=assets_prices) \
             .agg_transactions() \
             .inventory_fifo()
-        
+
+    krakendf.calculate_costs()
+    df = krakendf.declarable_assets
+    print(df)
     # #print(df.to_string())
-    print(krakendf.changes)
+    #print(krakendf.changes)
 
 
     
