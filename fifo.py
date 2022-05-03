@@ -28,13 +28,16 @@ class KrakenDF:
         ]
         self.deposits = self.transactions[self.transactions["type"] == "deposit"]
         self.assets = list(set(self.changes["asset"].tolist()))
+        self.innacurate_prices = None
         self.declarable_assets = None
-        
+
     @classmethod
     def from_file(KrakenDF, filename=None):
         file_df = load_file(filename=filename)
-        file_df["operation"] = file_df["amount"].apply(lambda x: "sell" if x < 0 else "buy")
-        file_df["time"] = pd.to_datetime(file_df["time"])
+        file_df["operation"] = file_df["amount"].apply(
+            lambda x: "sell" if x < 0 else "buy"
+        )
+        file_df["time"] = pd.to_datetime(file_df["time"], utc=False)
         for col in ["txid", "refid", "type", "subtype", "asset", "operation"]:
             file_df[col] = file_df[col].astype("string")
         file_df.drop(columns=["subtype", "aclass", "balance"], inplace=True)
@@ -42,7 +45,15 @@ class KrakenDF:
         return KrakenDF(df=file_df)
 
     def attach_prices(self, prices=None):
-        self.changes["timestamp"] = self.changes["time"].apply(lambda x: int(x.replace(second=0).timestamp()))
+        # self.changes["timestamp"] = self.changes["time"].apply(
+        #     lambda x: int(x.replace(second=0).timestamp())
+        # )
+        self.changes["timestamp"] = self.changes["time"] \
+            .apply(lambda x: int(
+                x.tz_localize(tz='Europe/Madrid') \
+                .floor(freq="T").timestamp())
+                   )
+        print(self.changes.to_string())
         dfs = []
         for asset in self.assets:
             df_left = self.changes[self.changes["asset"] == asset] \
@@ -56,14 +67,25 @@ class KrakenDF:
             joined.reset_index(inplace=True)
             dfs.append(
                 joined.rename(columns={"close": "price_EUR"}) \
-                .drop(columns=["open", "high", "low", "volume", "trades", "timestamp", "index"])
+                .drop(
+                    columns=[
+                        "open",
+                        "high",
+                        "low",
+                        "volume",
+                        "trades",
+                        #"timestamp",
+                        "index"
+                    ]
+                )
             )
         df = pd.concat(dfs)
         df.loc[df["asset"] == "ZEUR", "price_EUR"] = 1
         df.set_index("refid", inplace=True)
-        self.changes = df
+        print(df.to_string())
+        self.changes = df.drop(columns=["timestamp"])
         return self
-        
+
     def agg_transactions(self):
         """Self joins to link assets sells with buys.
         """
@@ -110,17 +132,22 @@ class KrakenDF:
         """Returns a df with refid as key and columns for each refid which the founds come from
         also with quantity.
         """
-        sells = self.changes[self.changes["asset_sell"] == pair].sort_values(by="time", ascending=True)
+        sells = self.changes[self.changes["asset_sell"] == pair] \
+                    .sort_values(by="time", ascending=True)
         buys = self.changes[self.changes["asset_buy"] == pair]
         df_refs = []
         for idx, item in sells.iterrows():
             amount = item["amount_sell"]
-            origin = buys[buys["time"] < item["time"]].sort_values(by="time", ascending=True)
+            origin = buys[buys["time"] < item["time"]] \
+                .sort_values(by="time", ascending=True)
             computed_sells = fill_with(abs(amount), origin)
-            
+
             if computed_sells == []:
                 if pair != "ZEUR":
-                    logging.error("ERROR, sells not linked to foundings for asset {}".format(pair))
+                    logging.error(
+                        "ERROR, sells not linked to foundings for asset {}" \
+                        .format(pair)
+                    )
                     print(buys)
                     print(sells)
                 continue
@@ -129,7 +156,7 @@ class KrakenDF:
                 index, diff = item_dist["idx"], item_dist["quantity"]
                 buys.at[index, "amount_buy"] -= diff
                 item_dist["refid"] = idx
-                
+
             df_ref = pd.DataFrame(computed_sells)
             df_ref["idx"] = df_ref["idx"].astype("string")
             df_refs.append(df_ref)
@@ -168,12 +195,17 @@ class KrakenDF:
         ).sum().reset_index()
         # Sell costs comes from the asset (usually EUR/USDT) bought for each currency
         df["sell_cost"] = df["amount_buy"] * df["price_EUR_buy"]
-        self.changes = self.changes.join(df.set_index("refid")[["sell_cost", "buy_cost"]], on="refid", how="left")
+        self.changes = self.changes.join(
+            df.set_index("refid")[["sell_cost", "buy_cost"]],
+            on="refid",
+            how="left"
+        )
         return self
 
     def build_declarables(self):
         self.declarable_assets = self.changes[self.changes["asset_sell"] != "ZEUR"]
-        self.declarable_assets["gain"] = self.declarable_assets["sell_cost"] - self.declarable_assets["buy_cost"]
+        self.declarable_assets["gain"] = self.declarable_assets["sell_cost"] \
+            - self.declarable_assets["buy_cost"]
         self.declarable_assets.drop(
             columns=[
                 "refid_foundings",
@@ -187,13 +219,8 @@ class KrakenDF:
         self.declarable_assets.drop_duplicates(inplace=True)
         self.declarable_assets.sort_values(by="time", ascending=True)
         return self
-    
 
 
-
-
-
-    
 def fill_with(amountt=None, options=None):
     assignment = []
     quantity_to_fill = amountt
@@ -207,9 +234,6 @@ def fill_with(amountt=None, options=None):
         if quantity_to_fill == 0:
             break
     return list(filter(lambda x: abs(x["quantity"]) > 0, assignment))
-
-
-
 
 
 def build_assets_prices(assets_dict=None):
@@ -255,11 +279,9 @@ if __name__ == '__main__':
 
     krakendf.calculate_costs() \
             .build_declarables()
-    
+
     df = krakendf.declarable_assets
     print(df)
+
     # #print(df.to_string())
     #print(krakendf.changes)
-
-
-    
