@@ -13,23 +13,30 @@ class KrakenDF:
     def __init__(self, df=None):
         self.df = df
         self.transactions = df[df["txid"].notnull()]
-        self.changes = self.transactions[
-            (self.transactions["type"] != "transfer") &
-            (self.transactions["type"] != "staking") &
-            (self.transactions["type"] != "deposit")
-        ]
+        # self.changes = self.df[
+        #     (self.df["type"] != "transfer") &
+        #     (self.df["type"] != "staking") &
+        #     (self.df["type"] != "deposit")
+        # ]
         # self.changes = self.transactions[
         #     (self.transactions["type"] != "staking") &
         #     (self.transactions["type"] != "transfer")
         # ]
+        self.changes = df[df["txid"].notnull()]
+        print(self.changes)
         self.staks = self.transactions[
             (self.transactions["type"] == "transfer") |
             (self.transactions["type"] == "staking")
         ]
         self.deposits = self.transactions[self.transactions["type"] == "deposit"]
         self.assets = list(set(self.changes["asset"].tolist()))
-        self.innacurate_prices = None
+        logging.info("Found assets {}".format(self.assets))
+        self.assets = list(filter(lambda x: not x.endswith(".S"), self.assets))
+        logging.info("Transactional assets {}".format(self.assets))
         self.declarable_assets = None
+        self.transactions_count = self.changes.shape[0]
+        logging.info("Processed {} records in transactions".format(self.transactions_count))
+        
 
     @classmethod
     def from_file(KrakenDF, filename=None):
@@ -107,6 +114,10 @@ class KrakenDF:
                 .floor(freq="T").timestamp())
                    )
         self.changes = self._attach_prices_nearest(prices=prices)
+        # Clean time_joined and price_time_diff for asset EUR
+        for idx, item in self.changes[self.changes["asset"] == "ZEUR"].iterrows():
+            self.changes.loc[idx, "time_joined"] = self.changes.loc[idx, "time"]
+            self.changes.loc[idx, "price_time_diff"] = 0
         return self
 
     def agg_transactions(self):
@@ -129,6 +140,13 @@ class KrakenDF:
                 "operation_sell"
             ]
         ).rename(columns={"time_buy": "time"})
+        logging.info(
+            "Joined {} transactions (buy-sell), {} left open" \
+            .format(
+                self.changes.shape[0],
+                self.transactions_count - self.changes.shape[0]
+            )
+        )
         return self
 
     def _attach_buy_prices(self, asset_founding=None):
@@ -226,9 +244,19 @@ class KrakenDF:
         return self
 
     def build_declarables(self):
-        self.declarable_assets = self.changes[self.changes["asset_sell"] != "ZEUR"]
+        #self.declarable_assets = self.changes[self.changes["asset_sell"] != "ZEUR"]
+        self.declarable_assets = self.changes
         self.declarable_assets["gain"] = self.declarable_assets["sell_cost"] \
             - self.declarable_assets["buy_cost"]
+        self.declarable_assets.sort_values(by="time", ascending=True)
+        logging.info(
+            "Built {} declarable assets".format(
+                self.declarable_assets.reset_index()[["refid"]].drop_duplicates().shape[0]
+            )
+        )
+        return self
+
+    def agg_declarables(self):
         self.declarable_assets.drop(
             columns=[
                 "refid_foundings",
@@ -240,22 +268,25 @@ class KrakenDF:
             inplace=True
         )
         self.declarable_assets.drop_duplicates(inplace=True)
-        self.declarable_assets.sort_values(by="time", ascending=True)
+        self.declarable_assets = self.declarable_assets.reset_index()
+        self.declarable_assets = self.declarable_assets[
+            ~self.declarable_assets["refid"].str.startswith("Q")
+        ].set_index("refid")
         return self
+        
 
 
 def fill_with(amountt=None, options=None):
     assignment = []
     quantity_to_fill = amountt
     for idx, item in options.iterrows():
-        if item["amount_buy"] > quantity_to_fill:
-            assignment.append({"idx": idx, "quantity": quantity_to_fill})
-            quantity_to_fill = 0
-        else:
-            assignment.append({"idx": idx,  "quantity": item["amount_buy"]})
-            quantity_to_fill -= item["amount_buy"]
-        if quantity_to_fill == 0:
-            break
+        if quantity_to_fill > 0:
+            if item["amount_buy"] > quantity_to_fill:
+                assignment.append({"idx": idx, "quantity": quantity_to_fill})
+                quantity_to_fill = 0
+            else:
+                assignment.append({"idx": idx,  "quantity": item["amount_buy"]})
+                quantity_to_fill -= item["amount_buy"]
     return list(filter(lambda x: abs(x["quantity"]) > 0, assignment))
 
 
@@ -279,33 +310,40 @@ if __name__ == '__main__':
     logger.setLevel(logging.DEBUG)
     
     assets_files = {
-        "USDT": "Kraken_OHLCVT/USDTEUR_1.csv",
-        "GRT": "Kraken_OHLCVT/GRTEUR_1.csv",
-        "ADA": "Kraken_OHLCVT/ADAEUR_1.csv",
-        "OGN": "Kraken_OHLCVT/OGNEUR_1.csv",
-        "OXT": "Kraken_OHLCVT/OXTEUR_1.csv",
-        "REN": "Kraken_OHLCVT/RENEUR_1.csv",
-        "XXBT": "Kraken_OHLCVT/XBTEUR_1.csv",
+        "USDT": "../Kraken_OHLCVT/USDTEUR_1.csv",
+        "GRT": "../Kraken_OHLCVT/GRTEUR_1.csv",
+        "ADA": "../Kraken_OHLCVT/ADAEUR_1.csv",
+        "OGN": "../Kraken_OHLCVT/OGNEUR_1.csv",
+        "OXT": "../Kraken_OHLCVT/OXTEUR_1.csv",
+        "REN": "../Kraken_OHLCVT/RENEUR_1.csv",
+        "XXBT": "../Kraken_OHLCVT/XBTEUR_1.csv",
         "ZEUR": None,
-        "XETH": "Kraken_OHLCVT/ETHEUR_1.csv",
-        "BNC": "Kraken_OHLCVT/BNCEUR_1.csv",
-        "XLTC": "Kraken_OHLCVT/LTCEUR_1.csv"
+        "XETH": "../Kraken_OHLCVT/ETHEUR_1.csv",
+        "BNC": "../Kraken_OHLCVT/BNCEUR_1.csv",
+        "XLTC": "../Kraken_OHLCVT/LTCEUR_1.csv"
     }
 
 
     assets_prices = build_assets_prices(assets_dict=assets_files)
 
     krakendf = KrakenDF.from_file("ledgers.csv")
-    krakendf.attach_prices(prices=assets_prices) \
-            .agg_transactions() \
-            .inventory_fifo()
+    krakendf.attach_prices(prices=assets_prices)
+    print("################### prices")
+    print(krakendf.changes.sort_values(by="refid").to_string())
+    krakendf.agg_transactions()
+    print("################### agg transactions")
+    print(krakendf.changes.sort_values(by="refid").to_string())
+    krakendf.inventory_fifo()
+    print("################### inventory")
+    print(krakendf.changes.sort_values(by="refid").to_string())
+    krakendf.calculate_costs()
+    print("################### prices")
+    print(krakendf.changes.sort_values(by="refid").to_string())
+    krakendf.build_declarables() \
+            .agg_declarables()
 
-    print(krakendf.changes)
-    krakendf.calculate_costs() \
-            .build_declarables()
-
-    df = krakendf.declarable_assets
-    print(df)
+    df = krakendf.declarable_assets.sort_values(by=["asset_buy", "time"])
+    print(df.to_string())
 
     # #print(df.to_string())
     #print(krakendf.changes)
