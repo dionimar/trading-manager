@@ -44,16 +44,62 @@ class KrakenDF:
         file_df.set_index("refid", inplace=True)
         return KrakenDF(df=file_df)
 
+    def _split_by_nan(self, df=None, col=None):
+        having = df[df[col].notnull()]
+        no_having = df[df[col].isnull()]
+        return having, no_having
+
+    def attach_prices_nearest(self, prices=None):
+        self.innacurate_prices.drop(columns= ["price_EUR"], inplace=True)
+        self.innacurate_prices["timestamp"] = self.innacurate_prices["time"] \
+            .apply(lambda x: int(
+                x.tz_localize(tz='Europe/Madrid') \
+                .floor(freq="T").timestamp())
+                   )
+        dfs = []
+        for asset in self.assets:
+            df_left = self.innacurate_prices[self.innacurate_prices["asset"] == asset] \
+                          .reset_index() \
+                          .set_index("timestamp")
+            df_right = prices[prices["asset"] == asset] \
+                .drop(columns=["asset"]) \
+                .reset_index()
+            df_right["timestamp_nearest"] = df_right["timestamp"]
+            df_right.set_index("timestamp", inplace=True)
+            
+            joined = pd.merge_asof(df_left, df_right, on="timestamp", direction="nearest")
+            joined["time_joined"] = pd.to_datetime(
+                joined["timestamp_nearest"].apply(lambda x: pd.Timestamp.fromtimestamp(x)),
+                utc=False
+            )
+            joined["price_time_diff"] = joined["time"] - joined["time_joined"]
+            joined["price_time_diff"] = joined["price_time_diff"].apply(lambda x: x.total_seconds())
+            joined.drop(columns=["timestamp_nearest"], inplace=True)
+            joined.reset_index(inplace=True)
+            dfs.append(
+                joined.rename(columns={"close": "price_EUR"}) \
+                .drop(
+                    columns=[
+                        "open",
+                        "high",
+                        "low",
+                        "volume",
+                        "trades",
+                        "index"
+                    ]
+                )
+            )
+        df = pd.concat(dfs)
+        df.loc[df["asset"] == "ZEUR", "price_EUR"] = 1
+        df.set_index("refid", inplace=True)
+        self.innacurate_prices = df.drop(columns=["timestamp"])
+
     def attach_prices(self, prices=None):
-        # self.changes["timestamp"] = self.changes["time"].apply(
-        #     lambda x: int(x.replace(second=0).timestamp())
-        # )
         self.changes["timestamp"] = self.changes["time"] \
             .apply(lambda x: int(
                 x.tz_localize(tz='Europe/Madrid') \
                 .floor(freq="T").timestamp())
                    )
-        print(self.changes.to_string())
         dfs = []
         for asset in self.assets:
             df_left = self.changes[self.changes["asset"] == asset] \
@@ -74,7 +120,6 @@ class KrakenDF:
                         "low",
                         "volume",
                         "trades",
-                        #"timestamp",
                         "index"
                     ]
                 )
@@ -82,8 +127,14 @@ class KrakenDF:
         df = pd.concat(dfs)
         df.loc[df["asset"] == "ZEUR", "price_EUR"] = 1
         df.set_index("refid", inplace=True)
-        print(df.to_string())
         self.changes = df.drop(columns=["timestamp"])
+        self.changes, self.innacurate_prices = self._split_by_nan(
+            self.changes, "price_EUR"
+        )
+        self.changes["price_time_diff"] = 0
+        print(self.changes)
+        self.attach_prices_nearest(prices)
+        print(self.innacurate_prices)
         return self
 
     def agg_transactions(self):
@@ -254,7 +305,7 @@ if __name__ == '__main__':
 
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
-
+    
     assets_files = {
         "USDT": "Kraken_OHLCVT/USDTEUR_1.csv",
         "GRT": "Kraken_OHLCVT/GRTEUR_1.csv",
@@ -277,11 +328,11 @@ if __name__ == '__main__':
             .agg_transactions() \
             .inventory_fifo()
 
-    krakendf.calculate_costs() \
-            .build_declarables()
+    # krakendf.calculate_costs() \
+    #         .build_declarables()
 
-    df = krakendf.declarable_assets
-    print(df)
+    # df = krakendf.declarable_assets
+    # print(df)
 
     # #print(df.to_string())
     #print(krakendf.changes)
