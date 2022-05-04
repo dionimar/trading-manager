@@ -20,6 +20,50 @@ class AssetZEUR:
         df["asset"] = df["asset"].astype("string")
         return df
 
+class InventoryFIFO:
+    @staticmethod
+    def inventory_asset(buys=None, sells=None, asset=None):
+        df_refs = []
+        for idx, item in sells.iterrows():
+            amount = item["amount_sell"]
+            origin = buys[buys["time"] < item["time"]] \
+                .sort_values(by="time", ascending=True)
+            computed_sells = InventoryFIFO.fill_with(abs(amount), origin)
+
+            if computed_sells == []:
+                logging.error(
+                    "ERROR, sells not linked to foundings for asset {}" \
+                    .format(asset)
+                )
+                continue
+            # Update buys with already used balances
+            for item_dist in computed_sells:
+                index, diff = item_dist["idx"], item_dist["quantity"]
+                buys.at[index, "amount_buy"] -= diff
+                item_dist["refid"] = idx
+
+            df_ref = pd.DataFrame(computed_sells)
+            df_ref["idx"] = df_ref["idx"].astype("string")
+            df_refs.append(df_ref)
+        if df_refs == []:
+            return None
+        return pd.concat(df_refs)
+
+    @staticmethod
+    def fill_with(amountt=None, options=None):
+        assignment = []
+        quantity_to_fill = amountt
+        for idx, item in options.iterrows():
+            if quantity_to_fill > 0:
+                if item["amount_buy"] > quantity_to_fill:
+                    assignment.append({"idx": idx, "quantity": quantity_to_fill})
+                    quantity_to_fill = 0
+                else:
+                    assignment.append({"idx": idx,  "quantity": item["amount_buy"]})
+                    quantity_to_fill -= item["amount_buy"]
+        return list(filter(lambda x: abs(x["quantity"]) > 0, assignment))
+
+
 
 class KrakenDF:
     def __init__(self, df=None):
@@ -165,48 +209,17 @@ class KrakenDF:
             .drop(columns="index")
         return joined
 
-    def _inventory_fifo_asset(self, pair=None):
-        """Returns a df with refid as key and columns for each refid which the founds come from
-        also with quantity.
-        """
-        sells = self.transactions[self.transactions["asset_sell"] == pair] \
-                    .sort_values(by="time", ascending=True)
-        buys = self.transactions[self.transactions["asset_buy"] == pair]
-        df_refs = []
-        for idx, item in sells.iterrows():
-            amount = item["amount_sell"]
-            origin = buys[buys["time"] < item["time"]] \
-                .sort_values(by="time", ascending=True)
-            computed_sells = fill_with(abs(amount), origin)
-
-            if computed_sells == []:
-                if pair != "ZEUR":
-                    logging.error(
-                        "ERROR, sells not linked to foundings for asset {}" \
-                        .format(pair)
-                    )
-                    print(buys)
-                    print(sells)
-                continue
-            # Update buys with already used balances
-            for item_dist in computed_sells:
-                index, diff = item_dist["idx"], item_dist["quantity"]
-                buys.at[index, "amount_buy"] -= diff
-                item_dist["refid"] = idx
-
-            df_ref = pd.DataFrame(computed_sells)
-            df_ref["idx"] = df_ref["idx"].astype("string")
-            df_refs.append(df_ref)
-        if df_refs == []:
-            return None
-        return pd.concat(df_refs)
-
-    def inventory_fifo(self):
+    def build_inventory(self, strategy=InventoryFIFO):
         """Calculates sells distribution for available buys with FIFO method"""
         dfs = []
         for asset in self.assets:
             logging.info("Processing asset {}".format(asset))
-            asset_founding = self._inventory_fifo_asset(pair=asset)
+            sells = self.transactions[self.transactions["asset_sell"] == asset] \
+                        .sort_values(by="time", ascending=True)
+            buys = self.transactions[self.transactions["asset_buy"] == asset]
+            asset_founding = strategy.inventory_asset(
+                buys=buys, sells=sells, asset=asset
+            )
             asset_founding = self._attach_buy_prices(asset_founding=asset_founding)
             dfs.append(asset_founding)
         assets_foundings = pd.concat(dfs)
@@ -302,21 +315,6 @@ class KrakenDF:
             ~self.declarable_assets["refid"].str.startswith("Q")
         ].set_index("refid")
         return self
-        
-
-
-def fill_with(amountt=None, options=None):
-    assignment = []
-    quantity_to_fill = amountt
-    for idx, item in options.iterrows():
-        if quantity_to_fill > 0:
-            if item["amount_buy"] > quantity_to_fill:
-                assignment.append({"idx": idx, "quantity": quantity_to_fill})
-                quantity_to_fill = 0
-            else:
-                assignment.append({"idx": idx,  "quantity": item["amount_buy"]})
-                quantity_to_fill -= item["amount_buy"]
-    return list(filter(lambda x: abs(x["quantity"]) > 0, assignment))
 
 
 def build_assets_prices(assets_dict=None):
@@ -362,7 +360,7 @@ if __name__ == '__main__':
     krakendf.agg_transactions()
     # print("################### agg transactions")
     # print(krakendf.changes.sort_values(by="refid").to_string())
-    krakendf.inventory_fifo()
+    krakendf.build_inventory()
     print("################### inventory")
     print(krakendf.transactions.sort_values(by="refid").to_string())
     krakendf._test_fifo()
