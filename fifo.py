@@ -21,6 +21,9 @@ class AssetZEUR:
         return df
 
 class InventoryFIFO:
+    """Input dataframes must be indexed by 'refid' and contain columns 
+    'amount_sell', 'amount_buy' and 'time'.
+    """
     @staticmethod
     def inventory_asset(buys=None, sells=None, asset=None):
         df_refs = []
@@ -148,17 +151,27 @@ class KrakenDF:
         return df
 
     def attach_prices(self, prices=None):
-        self.transactions["timestamp"] = self.transactions["time"] \
-            .apply(lambda x: int(
-                x.tz_localize(tz='Europe/Madrid') \
-                .floor(freq="T").timestamp())
-                   )
+        print(self.transactions)
+        for idx, item in self.transactions.iterrows():
+            self.transactions.loc[idx, "timestamp"] = \
+                item["time"].tz_localize(tz='Europe/Madrid').floor(freq="T").timestamp()
+        self.transactions["timestamp"] = self.transactions["timestamp"].astype("int")
+        
+        self._test_timestamp_conversion()
+        
         self.transactions = self._attach_prices_nearest(prices=prices)
         # Clean time_joined and price_time_diff for asset EUR
         for idx, item in self.transactions[self.transactions["asset"] == "ZEUR"].iterrows():
             self.transactions.loc[idx, "time_joined"] = self.transactions.loc[idx, "time"]
             self.transactions.loc[idx, "price_time_diff"] = 0
         return self
+
+    def _test_timestamp_conversion(self):
+        for idx, item in self.transactions.iterrows():
+            orig = item["time"]
+            target = item["timestamp"]
+            if parse(str(orig)).replace(second=0).timestamp() != target:
+                raise Exception("Timestamp conversion failed, test not passed")
 
     def agg_transactions(self):
         """Self joins to link assets sells with buys.
