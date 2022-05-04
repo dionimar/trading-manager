@@ -71,20 +71,12 @@ class InventoryFIFO:
 class KrakenDF:
     def __init__(self, df=None):
         self.df = df
-        self.transactions = df[df["txid"].notnull()]
-        self.staks = self.transactions[
-            (self.transactions["type"] == "transfer") |
-            (self.transactions["type"] == "staking")
-        ]
-        self.deposits = self.transactions[self.transactions["type"] == "deposit"]
-        self.assets = list(set(self.transactions["asset"].tolist()))
-        logging.info("Found assets {}".format(self.assets))
-        self.assets = list(filter(lambda x: not x.endswith(".S"), self.assets))
-        logging.info("Transactional assets {}".format(self.assets))
+        self.transactions = self._build_fact()
+        self.assets = self._get_assets(lst=df["asset"].tolist())
+        self.prices = None
         self.declarable_assets = None
-        self.transactions_count = self.transactions.shape[0]
-        logging.info("Processed {} records in transactions".format(self.transactions_count))
         self.inventory = None
+        logging.info(f"Found assets {self.assets}")
 
     @classmethod
     def from_file(KrakenDF, filename=None):
@@ -99,109 +91,82 @@ class KrakenDF:
         file_df.set_index("refid", inplace=True)
         return KrakenDF(df=file_df)
 
-    def _join_with_nearest_prices(self, prices=None, asset=None):
-        # If asset is ZEUR simulate df with pricing history
-        if asset == "ZEUR":
-            prices = AssetZEUR.prices()
-        df_left = self.transactions[self.transactions["asset"] == asset] \
-            .reset_index() \
-            .set_index("timestamp")
-        df_right = prices[prices["asset"] == asset] \
-            .drop(columns=["asset"]) \
-            .reset_index()
-        df_right["timestamp_nearest"] = df_right["timestamp"]
-        df_right.set_index("timestamp", inplace=True)
-        joined = pd.merge_asof(df_left, df_right, on="timestamp", direction="nearest")
-        joined.set_index("refid", inplace=True)
-        return joined
+    def _get_assets(self, lst=None):
+        return list(set(filter(lambda x: not x.endswith(".S"), lst)))
 
-    def _attach_prices_nearest(self, prices=None):
-        """For each asset different from ZEUR, attach the nearest price found, and
-        creates a column price_time_diff with the difference in seconds.
-        It normal to have less than 60 seconds due to minute agg for prices.
+    def _build_fact(self):
+        """Self joins to link assets sells with buys.
         """
+        df = self.df[
+            self.df["txid"].notnull()
+        ][["time", "asset", "amount", "operation"]].copy()
+        transactions = df[df["operation"] == "buy"].join(
+            df[df["operation"] == "sell"],
+            on="refid",
+            how="left",
+            lsuffix="_buy",
+            rsuffix="_sell"
+         ).drop(
+             columns=["operation_buy", "operation_sell", "time_sell"]
+         ).rename(
+             columns={"time_buy": "time"}
+         )
+        # TODO assert time_buy == time_sell except for foundings, stakings
+        logging.info(
+            "Built transactions data, {} records".format(transactions.shape[0])
+        )
+        return transactions
+
+    def build_prices(self, prices=None):
+        df = self.df[["time", "asset"]].copy()
+        df["time_key"] = df["time"]
+        df.reset_index(inplace=True)
+        df.set_index(["refid", "time_key"], inplace=True)
+        for idx, item in df.iterrows():
+            df.loc[idx, "timestamp"] = \
+                int(parse(str(item["time"])).replace(second=0).timestamp())
+        df["timestamp"] = df["timestamp"].astype("int")
+        df.reset_index(inplace=True)
+        df.drop(columns=["time_key"], inplace=True)
+        self._test_timestamp_conversion(df=df)
         dfs = []
-        # Just attach prices others than ZEUR
         for asset in self.assets:
-            joined = self._join_with_nearest_prices(prices=prices, asset=asset)
+            df_left = df[df["asset"] == asset].set_index("timestamp")
+            df_right = prices[prices["asset"] == asset] \
+                .drop(columns=["asset", "open", "high", "low", "volume", "trades"]) \
+                .reset_index(drop=True)
+            df_right["timestamp_nearest"] = df_right["timestamp"]
+            df_right.set_index("timestamp", inplace=True)
+            joined = pd.merge_asof(df_left, df_right, on="timestamp", direction="nearest")
+            joined.set_index("refid", inplace=True)
+            print(joined)
             joined["time_joined"] = pd.to_datetime(
                 joined["timestamp_nearest"].apply(lambda x: pd.Timestamp.fromtimestamp(x)),
                 utc=False
             )
             joined["price_time_diff"] = joined["time"] - joined["time_joined"]
             joined["price_time_diff"] = joined["price_time_diff"].apply(lambda x: x.total_seconds())
-            joined.drop(columns=["timestamp_nearest"], inplace=True)
-            joined.reset_index(inplace=True)
-            dfs.append(
-                joined.rename(columns={"close": "price_EUR"}) \
-                .drop(
-                    columns=[
-                        "open",
-                        "high",
-                        "low",
-                        "volume",
-                        "trades",
-                        "index"
-                    ]
-                )
-            )
-        df = pd.concat(dfs)
-        df.set_index("refid", inplace=True)
-        df.drop(columns=["timestamp"], inplace=True)
-        return df
-
-    def attach_prices(self, prices=None):
-        df = self.transactions.copy()
-        for idx, item in df.iterrows():
-            df.loc[idx, "timestamp"] = \
-                item["time"].tz_localize(tz='Europe/Madrid').floor(freq="T").timestamp()
-        self.transactions = df
-        self.transactions["timestamp"] = self.transactions["timestamp"].astype("int")
-        
-        self._test_timestamp_conversion()
-        
-        self.transactions = self._attach_prices_nearest(prices=prices)
+            joined.drop(columns=["timestamp_nearest", "timestamp"], inplace=True)
+            dfs.append(joined)
+            
+        _prices = pd.concat(dfs)
+        #self._test_timestamp_conversion()
         # Clean time_joined and price_time_diff for asset EUR
-        for idx, item in self.transactions[self.transactions["asset"] == "ZEUR"].iterrows():
-            self.transactions.loc[idx, "time_joined"] = self.transactions.loc[idx, "time"]
-            self.transactions.loc[idx, "price_time_diff"] = 0
+        for idx, item in _prices[_prices["asset"] == "ZEUR"].iterrows():
+            _prices.loc[idx, "time_joined"] = _prices.loc[idx, "time"]
+            _prices.loc[idx, "price_time_diff"] = 0
+        self.prices = _prices.copy()
+        print(self.prices.to_string())
         return self
 
-    def _test_timestamp_conversion(self):
-        for idx, item in self.transactions.iterrows():
-            orig = item["time"]
-            target = item["timestamp"]
-            if parse(str(orig)).replace(second=0).timestamp() != target:
+    def _test_timestamp_conversion(self, df=None):
+        for idx, item in df.iterrows():
+            orig = parse(str(item["time"])).replace(second=0)
+            target = datetime.fromtimestamp(item["timestamp"])
+            if orig != target:
+                print(orig, item["time"], target, item["timestamp"])
+                print(item["time"], parse(str(item["time"])).replace(second=0), target)
                 raise Exception("Timestamp conversion failed, test not passed")
-
-    def agg_transactions(self):
-        """Self joins to link assets sells with buys.
-        """
-        self.transactions = self.transactions[self.transactions["operation"] == "buy"].join(
-            self.transactions[self.transactions["operation"] == "sell"],
-            on="refid",
-            how="left",
-            lsuffix="_buy",
-            rsuffix="_sell"
-        ).drop(
-            columns=[
-                "type_buy",
-                "type_sell",
-                "txid_buy",
-                "txid_sell",
-                "time_sell",
-                "operation_buy",
-                "operation_sell"
-            ]
-        ).rename(columns={"time_buy": "time"})
-        logging.info(
-            "Joined {} transactions (buy-sell), {} left open" \
-            .format(
-                self.transactions.shape[0],
-                self.transactions_count - self.transactions.shape[0]
-            )
-        )
-        return self
 
     def _attach_buy_prices(self, asset_founding=None):
         """Data comes with refid index"""
@@ -225,6 +190,8 @@ class KrakenDF:
 
     def build_inventory(self, strategy=InventoryFIFO):
         """Calculates sells distribution for available buys with FIFO method"""
+        if self.transactions is None:
+            raise Exception("Transactions must be build before building inventory")
         dfs = []
         for asset in self.assets:
             logging.info("Processing asset {}".format(asset))
@@ -234,9 +201,8 @@ class KrakenDF:
             asset_founding = strategy.inventory_asset(
                 buys=buys, sells=sells, asset=asset
             )
-            asset_founding = self._attach_buy_prices(asset_founding=asset_founding)
             dfs.append(asset_founding)
-        assets_foundings = pd.concat(dfs)
+        assets_foundings = pd.concat(dfs).set_index("refid")
         self.inventory = self.transactions.join(assets_foundings, on="refid", how="left")
         return self
 
@@ -339,14 +305,13 @@ class KrakenDF:
 def build_assets_prices(assets_dict=None):
     dfs = []
     for key, value in assets_dict.items():
-        if value is not None:
-            df = load_file(
-                value,
-                names=["timestamp", "open", "high", "low", "close", "volume", "trades"]
-            )
-            df["asset"] = key
-            df["asset"] = df["asset"].astype("string")
-            dfs.append(df)
+        df = load_file(
+            value,
+            names=["timestamp", "open", "high", "low", "close", "volume", "trades"]
+        )
+        df["asset"] = key
+        df["asset"] = df["asset"].astype("string")
+        dfs.append(df)
     return pd.concat(dfs)
 
 
@@ -363,34 +328,34 @@ if __name__ == '__main__':
         "OXT": "../Kraken_OHLCVT/OXTEUR_1.csv",
         "REN": "../Kraken_OHLCVT/RENEUR_1.csv",
         "XXBT": "../Kraken_OHLCVT/XBTEUR_1.csv",
-        "ZEUR": None,
         "XETH": "../Kraken_OHLCVT/ETHEUR_1.csv",
         "BNC": "../Kraken_OHLCVT/BNCEUR_1.csv",
         "XLTC": "../Kraken_OHLCVT/LTCEUR_1.csv"
     }
 
 
-    assets_prices = build_assets_prices(assets_dict=assets_files)
+    _prices = build_assets_prices(assets_dict=assets_files)
+    assets_prices = pd.concat([_prices, AssetZEUR.prices()])
+    
 
     krakendf = KrakenDF.from_file("ledgers.csv")
-    krakendf.attach_prices(prices=assets_prices)
-    # print("################### prices")
-    # print(krakendf.changes.sort_values(by="refid").to_string())
-    krakendf.agg_transactions()
-    # print("################### agg transactions")
-    # print(krakendf.changes.sort_values(by="refid").to_string())
-    krakendf.build_inventory()
-    # print("################### inventory")
-    # print(krakendf.transactions.sort_values(by="refid").to_string())
-    krakendf._test_fifo()
-    krakendf.calculate_costs()
-    # print("################### prices")
-    # print(krakendf.changes.sort_values(by="refid").to_string())
-    krakendf.build_declarables() \
-            .agg_declarables()
+    # krakendf.attach_prices(prices=assets_prices)
+    # # print("################### prices")
+    # # print(krakendf.changes.sort_values(by="refid").to_string())
 
-    df = krakendf.declarable_assets.sort_values(by=["asset_buy", "time"])
-    print(df.to_string())
+    krakendf.build_inventory()
+    krakendf.build_prices(prices=assets_prices)
+    # # print("################### inventory")
+    # # print(krakendf.transactions.sort_values(by="refid").to_string())
+    # krakendf._test_fifo()
+    # krakendf.calculate_costs()
+    # # print("################### prices")
+    # # print(krakendf.changes.sort_values(by="refid").to_string())
+    # krakendf.build_declarables() \
+    #         .agg_declarables()
+
+    # df = krakendf.declarable_assets.sort_values(by=["asset_buy", "time"])
+    # print(df.to_string())
 
     # #print(df.to_string())
     # print(krakendf.changes)
