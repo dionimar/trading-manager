@@ -151,10 +151,11 @@ class KrakenDF:
         return df
 
     def attach_prices(self, prices=None):
-        print(self.transactions)
-        for idx, item in self.transactions.iterrows():
-            self.transactions.loc[idx, "timestamp"] = \
+        df = self.transactions.copy()
+        for idx, item in df.iterrows():
+            df.loc[idx, "timestamp"] = \
                 item["time"].tz_localize(tz='Europe/Madrid').floor(freq="T").timestamp()
+        self.transactions = df
         self.transactions["timestamp"] = self.transactions["timestamp"].astype("int")
         
         self._test_timestamp_conversion()
@@ -293,12 +294,17 @@ class KrakenDF:
             on="refid",
             how="left"
         )
+        self.inventory["total_fee"] = \
+            (self.inventory["fee_buy"] * self.inventory["price_EUR_buy"]) \
+            + (self.inventory["fee_sell"] * self.inventory["price_EUR_sell"])
         return self
 
     def build_declarables(self):
         if self.inventory is None:
             raise Exception("Inventory must be computed before declarables are computed")
-        self.declarable_assets = self.inventory
+        # Transactions from ZEUR to crypto are not declarable (it's just entering to crypto world)
+        # Only declare changes in assets
+        self.declarable_assets = self.inventory[self.inventory["asset_sell"] != "ZEUR"]
         self.declarable_assets["gain"] = self.declarable_assets["sell_cost"] \
             - self.declarable_assets["buy_cost"]
         self.declarable_assets.sort_values(by="time", ascending=True)
@@ -374,8 +380,8 @@ if __name__ == '__main__':
     # print("################### agg transactions")
     # print(krakendf.changes.sort_values(by="refid").to_string())
     krakendf.build_inventory()
-    print("################### inventory")
-    print(krakendf.transactions.sort_values(by="refid").to_string())
+    # print("################### inventory")
+    # print(krakendf.transactions.sort_values(by="refid").to_string())
     krakendf._test_fifo()
     krakendf.calculate_costs()
     # print("################### prices")
@@ -387,4 +393,4 @@ if __name__ == '__main__':
     print(df.to_string())
 
     # #print(df.to_string())
-    #print(krakendf.changes)
+    # print(krakendf.changes)
