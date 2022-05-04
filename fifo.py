@@ -139,22 +139,21 @@ class KrakenDF:
             df_right.set_index("timestamp", inplace=True)
             joined = pd.merge_asof(df_left, df_right, on="timestamp", direction="nearest")
             joined.set_index("refid", inplace=True)
-            print(joined)
             joined["time_joined"] = pd.to_datetime(
                 joined["timestamp_nearest"].apply(lambda x: pd.Timestamp.fromtimestamp(x)),
                 utc=False
             )
-            joined["price_time_diff"] = joined["time"] - joined["time_joined"]
-            joined["price_time_diff"] = joined["price_time_diff"].apply(lambda x: x.total_seconds())
+            if asset == "ZEUR":
+                # Clean time_joined and price_time_diff for asset EUR
+                joined["price_time_diff"] = 0
+            else:
+                joined["price_time_diff"] = joined["time"] - joined["time_joined"]
+                joined["price_time_diff"] = joined["price_time_diff"].apply(lambda x: x.total_seconds())
             joined.drop(columns=["timestamp_nearest", "timestamp"], inplace=True)
+            joined["price_time_diff"] = joined["price_time_diff"].astype("int")
             dfs.append(joined)
             
         _prices = pd.concat(dfs)
-        #self._test_timestamp_conversion()
-        # Clean time_joined and price_time_diff for asset EUR
-        for idx, item in _prices[_prices["asset"] == "ZEUR"].iterrows():
-            _prices.loc[idx, "time_joined"] = _prices.loc[idx, "time"]
-            _prices.loc[idx, "price_time_diff"] = 0
         self.prices = _prices.copy()
         print(self.prices.to_string())
         return self
