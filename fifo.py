@@ -294,7 +294,7 @@ class KrakenDF:
             on="refid",
             how="left"
         )
-        self.inventory["total_fee"] = \
+        self.inventory["fee_buy_EUR"] = \
             (self.inventory["fee_buy"] * self.inventory["price_EUR_buy"]) \
             + (self.inventory["fee_sell"] * self.inventory["price_EUR_sell"])
         return self
@@ -304,7 +304,7 @@ class KrakenDF:
             raise Exception("Inventory must be computed before declarables are computed")
         # Transactions from ZEUR to crypto are not declarable (it's just entering to crypto world)
         # Only declare changes in assets
-        self.declarable_assets = self.inventory[self.inventory["asset_sell"] != "ZEUR"]
+        self.declarable_assets = self.inventory[self.inventory["asset_sell"] != "ZEUR"].copy()
         self.declarable_assets["gain"] = self.declarable_assets["sell_cost"] \
             - self.declarable_assets["buy_cost"]
         self.declarable_assets.sort_values(by="time", ascending=True)
