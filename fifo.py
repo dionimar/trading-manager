@@ -9,21 +9,23 @@ def load_file(filename=None, **kwargs):
     return pd.read_csv(filename, **kwargs)
 
 
+class AssetZEUR:
+    @staticmethod
+    def prices():
+        df = pd.DataFrame(
+            [[1000, 1, 1, 1, 1, 1, 1]],
+            columns=["timestamp", "open", "high", "low", "close", "volume", "trades"]
+        )
+        df["asset"] = "ZEUR"
+        df["asset"] = df["asset"].astype("string")
+        return df
+
+
 class KrakenDF:
     def __init__(self, df=None):
         self.df = df
         self.transactions = df[df["txid"].notnull()]
-        # self.changes = self.df[
-        #     (self.df["type"] != "transfer") &
-        #     (self.df["type"] != "staking") &
-        #     (self.df["type"] != "deposit")
-        # ]
-        # self.changes = self.transactions[
-        #     (self.transactions["type"] != "staking") &
-        #     (self.transactions["type"] != "transfer")
-        # ]
         self.changes = df[df["txid"].notnull()]
-        print(self.changes)
         self.staks = self.transactions[
             (self.transactions["type"] == "transfer") |
             (self.transactions["type"] == "staking")
@@ -36,7 +38,6 @@ class KrakenDF:
         self.declarable_assets = None
         self.transactions_count = self.changes.shape[0]
         logging.info("Processed {} records in transactions".format(self.transactions_count))
-        
 
     @classmethod
     def from_file(KrakenDF, filename=None):
@@ -54,12 +55,7 @@ class KrakenDF:
     def _join_with_nearest_prices(self, prices=None, asset=None):
         # If asset is ZEUR simulate df with pricing history
         if asset == "ZEUR":
-            prices = pd.DataFrame(
-                [[1000, 1, 1, 1, 1, 1, 1]],
-                columns=["timestamp", "open", "high", "low", "close", "volume", "trades"]
-            )
-            prices["asset"] = "ZEUR"
-            prices["asset"] = prices["asset"].astype("string")
+            prices = AssetZEUR.prices()
         df_left = self.changes[self.changes["asset"] == asset] \
             .reset_index() \
             .set_index("timestamp")
@@ -206,6 +202,7 @@ class KrakenDF:
         return pd.concat(df_refs)
 
     def inventory_fifo(self):
+        """Calculates sells distribution for available buys with FIFO method"""
         dfs = []
         for asset in self.assets:
             logging.info("Processing asset {}".format(asset))
@@ -215,6 +212,31 @@ class KrakenDF:
         assets_foundings = pd.concat(dfs)
         self.changes = self.changes.join(assets_foundings, on="refid", how="left")
         return self
+
+    def _test_fifo(self):
+        """Checks if quantity used for referencing sells is at most
+        the amount_buy in total
+        """
+        df_ref = self.changes.reset_index()[["refid_foundings", "quantity"]]
+        df_founds = self.changes.reset_index()[["refid", "amount_buy"]] \
+            .drop_duplicates()
+        df_ref = df_ref.groupby("refid_foundings") \
+                       .sum() \
+                       .reset_index() \
+                       .rename(columns={"refid_foundings": "refid"}) \
+                       .set_index("refid")
+        df_checks = df_ref.join(
+            df_founds.set_index("refid"),
+            on="refid",
+            how="left"
+        )
+        df_checks["assertion"] = df_checks["quantity"] <= df_checks["amount_buy"]
+        check = all(df_checks["assertion"].to_list())
+        if not check:
+            logging.error(
+                "Foundings distribution test failing. The quantity of founds used error"
+            )
+        logging.info("Test for FIFO distribution passed.")
 
     def calculate_costs(self):
         df = self.changes.reset_index()
@@ -328,17 +350,18 @@ if __name__ == '__main__':
 
     krakendf = KrakenDF.from_file("ledgers.csv")
     krakendf.attach_prices(prices=assets_prices)
-    print("################### prices")
-    print(krakendf.changes.sort_values(by="refid").to_string())
+    # print("################### prices")
+    # print(krakendf.changes.sort_values(by="refid").to_string())
     krakendf.agg_transactions()
-    print("################### agg transactions")
-    print(krakendf.changes.sort_values(by="refid").to_string())
+    # print("################### agg transactions")
+    # print(krakendf.changes.sort_values(by="refid").to_string())
     krakendf.inventory_fifo()
     print("################### inventory")
     print(krakendf.changes.sort_values(by="refid").to_string())
+    krakendf._test_fifo()
     krakendf.calculate_costs()
-    print("################### prices")
-    print(krakendf.changes.sort_values(by="refid").to_string())
+    # print("################### prices")
+    # print(krakendf.changes.sort_values(by="refid").to_string())
     krakendf.build_declarables() \
             .agg_declarables()
 
