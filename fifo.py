@@ -25,19 +25,19 @@ class KrakenDF:
     def __init__(self, df=None):
         self.df = df
         self.transactions = df[df["txid"].notnull()]
-        self.changes = df[df["txid"].notnull()]
         self.staks = self.transactions[
             (self.transactions["type"] == "transfer") |
             (self.transactions["type"] == "staking")
         ]
         self.deposits = self.transactions[self.transactions["type"] == "deposit"]
-        self.assets = list(set(self.changes["asset"].tolist()))
+        self.assets = list(set(self.transactions["asset"].tolist()))
         logging.info("Found assets {}".format(self.assets))
         self.assets = list(filter(lambda x: not x.endswith(".S"), self.assets))
         logging.info("Transactional assets {}".format(self.assets))
         self.declarable_assets = None
-        self.transactions_count = self.changes.shape[0]
+        self.transactions_count = self.transactions.shape[0]
         logging.info("Processed {} records in transactions".format(self.transactions_count))
+        self.inventory = None
 
     @classmethod
     def from_file(KrakenDF, filename=None):
@@ -56,7 +56,7 @@ class KrakenDF:
         # If asset is ZEUR simulate df with pricing history
         if asset == "ZEUR":
             prices = AssetZEUR.prices()
-        df_left = self.changes[self.changes["asset"] == asset] \
+        df_left = self.transactions[self.transactions["asset"] == asset] \
             .reset_index() \
             .set_index("timestamp")
         df_right = prices[prices["asset"] == asset] \
@@ -104,23 +104,23 @@ class KrakenDF:
         return df
 
     def attach_prices(self, prices=None):
-        self.changes["timestamp"] = self.changes["time"] \
+        self.transactions["timestamp"] = self.transactions["time"] \
             .apply(lambda x: int(
                 x.tz_localize(tz='Europe/Madrid') \
                 .floor(freq="T").timestamp())
                    )
-        self.changes = self._attach_prices_nearest(prices=prices)
+        self.transactions = self._attach_prices_nearest(prices=prices)
         # Clean time_joined and price_time_diff for asset EUR
-        for idx, item in self.changes[self.changes["asset"] == "ZEUR"].iterrows():
-            self.changes.loc[idx, "time_joined"] = self.changes.loc[idx, "time"]
-            self.changes.loc[idx, "price_time_diff"] = 0
+        for idx, item in self.transactions[self.transactions["asset"] == "ZEUR"].iterrows():
+            self.transactions.loc[idx, "time_joined"] = self.transactions.loc[idx, "time"]
+            self.transactions.loc[idx, "price_time_diff"] = 0
         return self
 
     def agg_transactions(self):
         """Self joins to link assets sells with buys.
         """
-        self.changes = self.changes[self.changes["operation"] == "buy"].join(
-            self.changes[self.changes["operation"] == "sell"],
+        self.transactions = self.transactions[self.transactions["operation"] == "buy"].join(
+            self.transactions[self.transactions["operation"] == "sell"],
             on="refid",
             how="left",
             lsuffix="_buy",
@@ -139,8 +139,8 @@ class KrakenDF:
         logging.info(
             "Joined {} transactions (buy-sell), {} left open" \
             .format(
-                self.changes.shape[0],
-                self.transactions_count - self.changes.shape[0]
+                self.transactions.shape[0],
+                self.transactions_count - self.transactions.shape[0]
             )
         )
         return self
@@ -152,7 +152,7 @@ class KrakenDF:
         asset_indexed = asset_founding.reset_index() \
             .rename(columns={"refid": "refid_origin", "idx": "refid"})
         asset_indexed = asset_indexed.set_index("refid")
-        _data = self.changes[["price_EUR_buy"]]
+        _data = self.transactions[["price_EUR_buy"]]
         joined = asset_indexed.join(_data, on="refid", how="left") \
             .reset_index() \
             .rename(
@@ -169,9 +169,9 @@ class KrakenDF:
         """Returns a df with refid as key and columns for each refid which the founds come from
         also with quantity.
         """
-        sells = self.changes[self.changes["asset_sell"] == pair] \
+        sells = self.transactions[self.transactions["asset_sell"] == pair] \
                     .sort_values(by="time", ascending=True)
-        buys = self.changes[self.changes["asset_buy"] == pair]
+        buys = self.transactions[self.transactions["asset_buy"] == pair]
         df_refs = []
         for idx, item in sells.iterrows():
             amount = item["amount_sell"]
@@ -210,15 +210,17 @@ class KrakenDF:
             asset_founding = self._attach_buy_prices(asset_founding=asset_founding)
             dfs.append(asset_founding)
         assets_foundings = pd.concat(dfs)
-        self.changes = self.changes.join(assets_foundings, on="refid", how="left")
+        self.inventory = self.transactions.join(assets_foundings, on="refid", how="left")
         return self
 
     def _test_fifo(self):
         """Checks if quantity used for referencing sells is at most
         the amount_buy in total
         """
-        df_ref = self.changes.reset_index()[["refid_foundings", "quantity"]]
-        df_founds = self.changes.reset_index()[["refid", "amount_buy"]] \
+        if self.inventory is None:
+            raise Exception("Inventory must be computed before tested")
+        df_ref = self.inventory.reset_index()[["refid_foundings", "quantity"]]
+        df_founds = self.transactions.reset_index()[["refid", "amount_buy"]] \
             .drop_duplicates()
         df_ref = df_ref.groupby("refid_foundings") \
                        .sum() \
@@ -239,7 +241,9 @@ class KrakenDF:
         logging.info("Test for FIFO distribution passed.")
 
     def calculate_costs(self):
-        df = self.changes.reset_index()
+        if self.inventory is None:
+            raise Exception("Inventory strategy must be computed before calculating costs")
+        df = self.inventory.reset_index()
         # Buy costs comes from fifo foundings
         df["buy_cost"] = df["quantity"] * df["price_bought_EUR"]
         df = df.groupby(
@@ -258,7 +262,7 @@ class KrakenDF:
         ).sum().reset_index()
         # Sell costs comes from the asset (usually EUR/USDT) bought for each currency
         df["sell_cost"] = df["amount_buy"] * df["price_EUR_buy"]
-        self.changes = self.changes.join(
+        self.inventory = self.inventory.join(
             df.set_index("refid")[["sell_cost", "buy_cost"]],
             on="refid",
             how="left"
@@ -266,8 +270,9 @@ class KrakenDF:
         return self
 
     def build_declarables(self):
-        #self.declarable_assets = self.changes[self.changes["asset_sell"] != "ZEUR"]
-        self.declarable_assets = self.changes
+        if self.inventory is None:
+            raise Exception("Inventory must be computed before declarables are computed")
+        self.declarable_assets = self.inventory
         self.declarable_assets["gain"] = self.declarable_assets["sell_cost"] \
             - self.declarable_assets["buy_cost"]
         self.declarable_assets.sort_values(by="time", ascending=True)
@@ -279,6 +284,8 @@ class KrakenDF:
         return self
 
     def agg_declarables(self):
+        if self.declarable_assets is None:
+            raise Exception("Declarable assets must be computed before agregating them")
         self.declarable_assets.drop(
             columns=[
                 "refid_foundings",
@@ -357,7 +364,7 @@ if __name__ == '__main__':
     # print(krakendf.changes.sort_values(by="refid").to_string())
     krakendf.inventory_fifo()
     print("################### inventory")
-    print(krakendf.changes.sort_values(by="refid").to_string())
+    print(krakendf.transactions.sort_values(by="refid").to_string())
     krakendf._test_fifo()
     krakendf.calculate_costs()
     # print("################### prices")
