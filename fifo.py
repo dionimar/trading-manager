@@ -221,9 +221,15 @@ class KrakenDF:
                 "time_nearest": "time_nearest_sell",
                 "time_delta": "time_delta_sell"
             }
+        ).reset_index().set_index(["time", "fee_on"]).join(
+            prices[["time", "asset", "price"]] \
+                .rename(columns={"asset": "fee_on", "price": "fee_price_buy"}) \
+                .set_index(["time", "fee_on"]),
+            on=["time", "fee_on"],
+            how="left"
         ).reset_index().set_index("refid")
 
-        #print(df_prices.sort_values("refid").to_string())
+        print(df_prices.sort_values("refid").to_string())
 
         df_inventory = self.inventory.reset_index() \
             .set_index("refid_foundings").join(
