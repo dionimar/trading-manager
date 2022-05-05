@@ -181,35 +181,61 @@ class KrakenDF:
 
     def calculate_costs(self):
         if self.inventory is None:
-            raise Exception("Inventory strategy must be computed before calculating costs")
-        df = self.inventory.reset_index()
-        # Buy costs comes from fifo foundings
-        df["buy_cost"] = df["quantity"] * df["price_bought_EUR"]
-        df = df.groupby(
-            [
-                "refid",
-                "time",
-                "asset_buy",
-                "amount_buy",
-                "fee_buy",
-                "price_EUR_buy",
-                "asset_sell",
-                "amount_sell",
-                "fee_sell",
-                "price_EUR_sell"
-            ]
-        ).sum().reset_index()
-        # Sell costs comes from the asset (usually EUR/USDT) bought for each currency
-        df["sell_cost"] = df["amount_buy"] * df["price_EUR_buy"]
-        self.inventory = self.inventory.join(
-            df.set_index("refid")[["sell_cost", "buy_cost"]],
+            raise Exception("Inventory strategy must be computed before calculating costs.")
+        if self.prices is None:
+            raise Exception("No prices found to calculate costs.")
+
+        df = self.transactions.reset_index()
+
+        prices = self.prices.reset_index().drop(columns=["refid"])
+
+        df_prices = df.set_index(["time", "asset_buy"]).join(
+            prices.rename(columns={"asset": "asset_buy"}).set_index(["time", "asset_buy"]),
+            on=["time", "asset_buy"],
+            how="left"
+        ).rename(
+            columns={
+                "price": "price_buy",
+                "time_nearest": "time_nearest_buy",
+                "time_delta": "time_delta_buy"
+            }
+        ).reset_index().set_index(["time", "asset_sell"]).join(
+            prices.rename(columns={"asset": "asset_sell"}).set_index(["time", "asset_sell"]),
+            on=["time", "asset_sell"],
+            how="left"
+        ).rename(
+            columns={
+                "price": "price_sell",
+                "time_nearest": "time_nearest_sell",
+                "time_delta": "time_delta_sell"
+            }
+        ).reset_index().set_index("refid")
+
+        df_inventory = self.inventory.reset_index() \
+            .set_index("refid_foundings").join(
+            df_prices.reset_index() \
+                     .rename(
+                         columns={"refid": "refid_foundings"}
+                     ).set_index("refid_foundings")[["price_buy"]] \
+                     .rename(columns={"price_buy": "price_sell"}),
+            on="refid_foundings",
+            how="left"
+        ).reset_index().set_index("refid").join(
+            df_prices[["price_buy"]],
             on="refid",
             how="left"
         )
-        self.inventory["fee_buy_EUR"] = \
-            (self.inventory["fee_buy"] * self.inventory["price_EUR_buy"]) \
-            + (self.inventory["fee_sell"] * self.inventory["price_EUR_sell"])
-        return self
+        
+        # buy costs comes from selling asset 
+        df_inventory["buy_cost"] = df_inventory["amount_buy"] * df_inventory["price_buy"]
+        # sell cost comes from foundings (how much we paid for buying them).
+        # Instead of calculating from transaction time, we take the price from founding boughts
+        df_inventory["sell_cost"] = df_inventory["quantity"] * df_inventory["price_sell"]
+
+        df_inventory = df_inventory \
+            .reset_index()[["refid", "buy_cost", "sell_cost"]] \
+            .groupby(["refid", "buy_cost"]).sum().reset_index().set_index("refid")
+        return df_inventory.copy()
 
     def build_declarables(self):
         if self.inventory is None:
@@ -323,18 +349,22 @@ if __name__ == '__main__':
 
 
     krakendf = KrakenDF.from_file("ledgers.csv")
+    
     krakendf.build_inventory()
     krakendf.build_prices(prices=assets_prices)
+    df_costs = krakendf.calculate_costs()
+    
+    print(krakendf.transactions.sort_values(by=["refid"]).to_string())
+    print(krakendf.inventory.sort_values(by=["refid"]).to_string())
+    print(krakendf.prices.sort_values(by=["refid"]).to_string())
 
-    # krakendf.calculate_costs()
+    
     # krakendf.build_declarables() \
     #         .agg_declarables()
 
     # df = krakendf.declarable_assets.sort_values(by=["asset_buy", "time"])
     # print(df.to_string())
 
-    # #print(df.to_string())
-    print(krakendf.inventory.to_string())
-    print(krakendf.prices.to_string())
+    
 
     KrakenDFTester._test_fifo(krakendf)
