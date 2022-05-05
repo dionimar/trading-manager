@@ -135,30 +135,30 @@ class KrakenDF:
             df_left = df[df["asset"] == asset].set_index("timestamp")
             df_right = prices[prices["asset"] == asset] \
                 .drop(columns=["asset", "open", "high", "low", "volume", "trades"]) \
-                .reset_index(drop=True)
+                .reset_index(drop=True) \
+                .rename(columns={"close": "price"})
             df_right["timestamp_nearest"] = df_right["timestamp"]
             df_right.set_index("timestamp", inplace=True)
             joined = pd.merge_asof(df_left, df_right, on="timestamp", direction="nearest")
             joined.set_index("refid", inplace=True)
-            joined["time_joined"] = pd.to_datetime(
+            joined["time_nearest"] = pd.to_datetime(
                 joined["timestamp_nearest"].apply(lambda x: pd.Timestamp.fromtimestamp(x)),
                 utc=False
             )
             if asset == "ZEUR":
                 # Clean time_joined and price_time_diff for asset EUR
-                joined["price_time_diff"] = 0
+                joined["time_delta"] = 0
+                joined["time_nearest"] = joined["time"]
             else:
-                joined["price_time_diff"] = joined["time"] - joined["time_joined"]
-                joined["price_time_diff"] = joined["price_time_diff"].apply(lambda x: x.total_seconds())
+                joined["time_delta"] = joined["time"] - joined["time_nearest"]
+                joined["time_delta"] = joined["time_delta"].apply(lambda x: x.total_seconds())
             joined.drop(columns=["timestamp_nearest", "timestamp"], inplace=True)
-            joined["price_time_diff"] = joined["price_time_diff"].astype("int")
+            joined["time_delta"] = joined["time_delta"].astype("int")
             dfs.append(joined)
             
         _prices = pd.concat(dfs)
         self.prices = _prices.copy()
         return self
-
-    
 
     def build_inventory(self, strategy=InventoryFIFO):
         """Calculates sells distribution for available buys with FIFO method"""
@@ -178,8 +178,6 @@ class KrakenDF:
         self.inventory = self.transactions.join(assets_foundings, on="refid", how="left")
         self.inventory.rename(columns={"idx": "refid_foundings"}, inplace=True)
         return self
-
-    
 
     def calculate_costs(self):
         if self.inventory is None:
@@ -322,12 +320,12 @@ if __name__ == '__main__':
 
     _prices = build_assets_prices(assets_dict=assets_files)
     assets_prices = pd.concat([_prices, AssetZEUR.prices()])
-    
+
 
     krakendf = KrakenDF.from_file("ledgers.csv")
     krakendf.build_inventory()
     krakendf.build_prices(prices=assets_prices)
-    
+
     # krakendf.calculate_costs()
     # krakendf.build_declarables() \
     #         .agg_declarables()
@@ -337,5 +335,6 @@ if __name__ == '__main__':
 
     # #print(df.to_string())
     print(krakendf.inventory.to_string())
+    print(krakendf.prices.to_string())
 
     KrakenDFTester._test_fifo(krakendf)
