@@ -128,8 +128,9 @@ class KrakenDF:
         df["timestamp"] = df["timestamp"].astype("int")
         df.reset_index(inplace=True)
         df.drop(columns=["time_key"], inplace=True)
-        self._test_timestamp_conversion(df=df)
+        KrakenDFTester._test_timestamp_conversion(df=df)
         dfs = []
+        
         for asset in self.assets:
             df_left = df[df["asset"] == asset].set_index("timestamp")
             df_right = prices[prices["asset"] == asset] \
@@ -155,37 +156,9 @@ class KrakenDF:
             
         _prices = pd.concat(dfs)
         self.prices = _prices.copy()
-        print(self.prices.to_string())
         return self
 
-    def _test_timestamp_conversion(self, df=None):
-        for idx, item in df.iterrows():
-            orig = parse(str(item["time"])).replace(second=0)
-            target = datetime.fromtimestamp(item["timestamp"])
-            if orig != target:
-                print(orig, item["time"], target, item["timestamp"])
-                print(item["time"], parse(str(item["time"])).replace(second=0), target)
-                raise Exception("Timestamp conversion failed, test not passed")
-
-    def _attach_buy_prices(self, asset_founding=None):
-        """Data comes with refid index"""
-        if asset_founding is None:
-            return None
-        asset_indexed = asset_founding.reset_index() \
-            .rename(columns={"refid": "refid_origin", "idx": "refid"})
-        asset_indexed = asset_indexed.set_index("refid")
-        _data = self.transactions[["price_EUR_buy"]]
-        joined = asset_indexed.join(_data, on="refid", how="left") \
-            .reset_index() \
-            .rename(
-                columns={
-                    "refid": "refid_foundings",
-                    "refid_origin": "refid",
-                    "price_EUR_buy": "price_bought_EUR"}
-            ) \
-            .set_index("refid") \
-            .drop(columns="index")
-        return joined
+    
 
     def build_inventory(self, strategy=InventoryFIFO):
         """Calculates sells distribution for available buys with FIFO method"""
@@ -203,34 +176,10 @@ class KrakenDF:
             dfs.append(asset_founding)
         assets_foundings = pd.concat(dfs).set_index("refid")
         self.inventory = self.transactions.join(assets_foundings, on="refid", how="left")
+        self.inventory.rename(columns={"idx": "refid_foundings"}, inplace=True)
         return self
 
-    def _test_fifo(self):
-        """Checks if quantity used for referencing sells is at most
-        the amount_buy in total
-        """
-        if self.inventory is None:
-            raise Exception("Inventory must be computed before tested")
-        df_ref = self.inventory.reset_index()[["refid_foundings", "quantity"]]
-        df_founds = self.transactions.reset_index()[["refid", "amount_buy"]] \
-            .drop_duplicates()
-        df_ref = df_ref.groupby("refid_foundings") \
-                       .sum() \
-                       .reset_index() \
-                       .rename(columns={"refid_foundings": "refid"}) \
-                       .set_index("refid")
-        df_checks = df_ref.join(
-            df_founds.set_index("refid"),
-            on="refid",
-            how="left"
-        )
-        df_checks["assertion"] = df_checks["quantity"] <= df_checks["amount_buy"]
-        check = all(df_checks["assertion"].to_list())
-        if not check:
-            logging.error(
-                "Foundings distribution test failing. The quantity of founds used error"
-            )
-        logging.info("Test for FIFO distribution passed.")
+    
 
     def calculate_costs(self):
         if self.inventory is None:
@@ -301,6 +250,44 @@ class KrakenDF:
         return self
 
 
+class KrakenDFTester:
+    @staticmethod
+    def _test_fifo(krakenDF=None):
+        """Checks if quantity used for referencing sells is at most
+        the amount_buy in total
+        """
+        if krakenDF.inventory is None:
+            raise Exception("Inventory must be computed before tested")
+        df_ref = krakenDF.inventory.reset_index()[["refid_foundings", "quantity"]]
+        df_founds = krakenDF.transactions.reset_index()[["refid", "amount_buy"]] \
+            .drop_duplicates()
+        df_ref = df_ref.groupby("refid_foundings") \
+                       .sum() \
+                       .reset_index() \
+                       .rename(columns={"refid_foundings": "refid"}) \
+                       .set_index("refid")
+        df_checks = df_ref.join(
+            df_founds.set_index("refid"),
+            on="refid",
+            how="left"
+        )
+        df_checks["assertion"] = df_checks["quantity"] <= df_checks["amount_buy"]
+        check = all(df_checks["assertion"].to_list())
+        if not check:
+            logging.error(
+                "Foundings distribution test failing. The quantity of founds used error"
+            )
+        logging.info("Test for FIFO distribution passed.")
+
+    @staticmethod
+    def _test_timestamp_conversion(df=None):
+        for idx, item in df.iterrows():
+            orig = parse(str(item["time"])).replace(second=0)
+            target = datetime.fromtimestamp(item["timestamp"])
+            if orig != target:
+                raise Exception("Timestamp conversion failed, test not passed")
+
+
 def build_assets_prices(assets_dict=None):
     dfs = []
     for key, value in assets_dict.items():
@@ -338,18 +325,10 @@ if __name__ == '__main__':
     
 
     krakendf = KrakenDF.from_file("ledgers.csv")
-    # krakendf.attach_prices(prices=assets_prices)
-    # # print("################### prices")
-    # # print(krakendf.changes.sort_values(by="refid").to_string())
-
     krakendf.build_inventory()
     krakendf.build_prices(prices=assets_prices)
-    # # print("################### inventory")
-    # # print(krakendf.transactions.sort_values(by="refid").to_string())
-    # krakendf._test_fifo()
+    
     # krakendf.calculate_costs()
-    # # print("################### prices")
-    # # print(krakendf.changes.sort_values(by="refid").to_string())
     # krakendf.build_declarables() \
     #         .agg_declarables()
 
@@ -357,4 +336,6 @@ if __name__ == '__main__':
     # print(df.to_string())
 
     # #print(df.to_string())
-    # print(krakendf.changes)
+    print(krakendf.inventory.to_string())
+
+    KrakenDFTester._test_fifo(krakendf)
