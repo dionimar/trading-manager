@@ -71,6 +71,7 @@ class InventoryFIFO:
 class KrakenDF:
     def __init__(self, df=None):
         self.df = df
+        print(df)
         self.transactions = self._build_fact()
         self.assets = self._get_assets(lst=df["asset"].tolist())
         self.prices = None
@@ -94,12 +95,23 @@ class KrakenDF:
     def _get_assets(self, lst=None):
         return list(set(filter(lambda x: not x.endswith(".S"), lst)))
 
+    def _select_fee(self, df=None):
+        df_fees = df.copy()
+        for idx, item in df_fees.iterrows():
+            if item["fee_sell"] > 0:
+                df_fees.loc[idx, "fee_on"] = df_fees.loc[idx, "asset_sell"]
+                df_fees.loc[idx, "fee"] = df_fees.loc[idx, "fee_sell"]
+            else:
+                df_fees.loc[idx, "fee_on"] = df_fees.loc[idx, "asset_buy"]
+                df_fees.loc[idx, "fee"] = df_fees.loc[idx, "fee_buy"]
+        return df_fees.drop(columns=["fee_sell", "fee_buy"])
+
     def _build_fact(self):
         """Self joins to link assets sells with buys.
         """
         df = self.df[
             self.df["txid"].notnull()
-        ][["time", "asset", "amount", "operation"]].copy()
+        ][["time", "asset", "amount", "operation", "fee"]].copy()
         transactions = df[df["operation"] == "buy"].join(
             df[df["operation"] == "sell"],
             on="refid",
@@ -111,6 +123,7 @@ class KrakenDF:
          ).rename(
              columns={"time_buy": "time"}
          )
+        transactions = self._select_fee(df=transactions)
         # TODO assert time_buy == time_sell except for foundings, stakings
         logging.info(
             "Built transactions data, {} records".format(transactions.shape[0])
@@ -186,7 +199,6 @@ class KrakenDF:
             raise Exception("No prices found to calculate costs.")
 
         df = self.transactions.reset_index()
-
         prices = self.prices.reset_index().drop(columns=["refid"])
 
         df_prices = df.set_index(["time", "asset_buy"]).join(
@@ -211,6 +223,8 @@ class KrakenDF:
             }
         ).reset_index().set_index("refid")
 
+        #print(df_prices.sort_values("refid").to_string())
+
         df_inventory = self.inventory.reset_index() \
             .set_index("refid_foundings").join(
             df_prices.reset_index() \
@@ -225,6 +239,8 @@ class KrakenDF:
             on="refid",
             how="left"
         )
+
+        print(df_inventory.sort_values("refid").to_string())
         
         # buy costs comes from selling asset 
         df_inventory["buy_cost"] = df_inventory["amount_buy"] * df_inventory["price_buy"]
@@ -352,11 +368,17 @@ if __name__ == '__main__':
     
     krakendf.build_inventory()
     krakendf.build_prices(prices=assets_prices)
-    df_costs = krakendf.calculate_costs()
-    
+
+    print("####################### transactions")
     print(krakendf.transactions.sort_values(by=["refid"]).to_string())
-    print(krakendf.inventory.sort_values(by=["refid"]).to_string())
-    print(krakendf.prices.sort_values(by=["refid"]).to_string())
+    # print("####################### inventory")
+    # print(krakendf.inventory.sort_values(by=["refid"]).to_string())
+    # print("####################### prices")
+    # print(krakendf.prices.sort_values(by=["refid"]).to_string())
+
+    print("####################### costs")
+    df_costs = krakendf.calculate_costs()
+    print(df_costs.sort_values(by=["refid"]).to_string())
 
     
     # krakendf.build_declarables() \
