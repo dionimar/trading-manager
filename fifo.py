@@ -99,11 +99,15 @@ class KrakenDF:
         df_fees = df.copy()
         for idx, item in df_fees.iterrows():
             if item["fee_sell"] > 0:
+                fee = df_fees.loc[idx, "fee_sell"]
                 df_fees.loc[idx, "fee_on"] = df_fees.loc[idx, "asset_sell"]
-                df_fees.loc[idx, "fee"] = df_fees.loc[idx, "fee_sell"]
+                df_fees.loc[idx, "fee"] = fee
+                df_fees.loc[idx, "fee_pct"] = -100 * fee / (fee + df_fees.loc[idx, "amount_sell"])
             else:
+                fee = df_fees.loc[idx, "fee_buy"]
                 df_fees.loc[idx, "fee_on"] = df_fees.loc[idx, "asset_buy"]
-                df_fees.loc[idx, "fee"] = df_fees.loc[idx, "fee_buy"]
+                df_fees.loc[idx, "fee"] = fee
+                df_fees.loc[idx, "fee_pct"] = 100 * fee / (fee + df_fees.loc[idx, "amount_buy"])
         return df_fees.drop(columns=["fee_sell", "fee_buy"])
 
     def _build_fact(self):
