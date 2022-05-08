@@ -194,6 +194,7 @@ class KrakenDF:
         assets_foundings = pd.concat(dfs).set_index("refid")
         self.inventory = self.transactions.join(assets_foundings, on="refid", how="left")
         self.inventory.rename(columns={"idx": "refid_foundings"}, inplace=True)
+        self.inventory["quantity_pct"] = -100 * self.inventory["quantity"] / self.inventory["amount_sell"]
         return self
 
     def calculate_costs(self):
@@ -378,12 +379,13 @@ if __name__ == '__main__':
     krakendf = KrakenDF.from_file("ledgers.csv")
     
     krakendf.build_inventory()
+    print("####################### inventory")
+    print(krakendf.inventory.sort_values(by=["refid"]).to_string())
     krakendf.build_prices(prices=assets_prices)
 
     print("####################### transactions")
     print(krakendf.transactions.sort_values(by=["refid"]).to_string())
-    # print("####################### inventory")
-    # print(krakendf.inventory.sort_values(by=["refid"]).to_string())
+
     # print("####################### prices")
     # print(krakendf.prices.sort_values(by=["refid"]).to_string())
 
