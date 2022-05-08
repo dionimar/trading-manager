@@ -228,7 +228,7 @@ class KrakenDF:
             }
         ).reset_index().set_index(["time", "fee_on"]).join( # Buy prices fee
             prices[["time", "asset", "price"]] \
-                .rename(columns={"asset": "fee_on", "price": "fee_price_buy"}) \
+                .rename(columns={"asset": "fee_on", "price": "fee_price"}) \
                 .set_index(["time", "fee_on"]),
             on=["time", "fee_on"],
             how="left"
@@ -241,12 +241,19 @@ class KrakenDF:
             df_prices.reset_index() \
                      .rename(
                          columns={"refid": "refid_foundings"}
-                     ).set_index("refid_foundings")[["price_buy"]] \
-                     .rename(columns={"price_buy": "price_sell"}),
+                     ).set_index("refid_foundings")[["price_buy", "fee_price", "fee"]] \
+                     .rename(
+                         columns={
+                             "price_buy": "price_sell",
+                             "fee_price": "fee_price_sell",
+                             "fee": "fee_sell"
+                         }
+                     ),
             on="refid_foundings",
             how="left"
         ).reset_index().set_index("refid").join(
-            df_prices[["price_buy", "fee_price_buy"]],
+            df_prices[["price_buy", "fee_price", "fee"]] \
+            .rename(columns={"fee_price": "fee_price_buy", "fee": "fee_buy"}),
             on="refid",
             how="left"
         )
@@ -255,13 +262,15 @@ class KrakenDF:
         
         # buy costs comes from selling asset 
         df_inventory["buy_cost"] = df_inventory["amount_buy"] * df_inventory["price_buy"]
-        df_inventory["buy_fee_cost"] = df_inventory["fee"] * df_inventory["fee_price_buy"]
+        df_inventory["buy_fee_cost"] = df_inventory["fee_buy"] * df_inventory["fee_price_buy"]
         # sell cost comes from foundings (how much we paid for buying them).
         # Instead of calculating from transaction time, we take the price from founding boughts
         df_inventory["sell_cost"] = df_inventory["quantity"] * df_inventory["price_sell"]
+        df_inventory["sell_fee_cost"] = \
+            (df_inventory["quantity_pct"] / 100) * df_inventory["fee_sell"] * df_inventory["fee_price_sell"]
 
         df_inventory = df_inventory \
-            .reset_index()[["refid", "buy_cost", "sell_cost", "buy_fee_cost"]] \
+            .reset_index()[["refid", "buy_cost", "sell_cost", "buy_fee_cost", "sell_fee_cost"]] \
             .groupby(["refid", "buy_cost", "buy_fee_cost"]).sum().reset_index().set_index("refid")
         return df_inventory.copy()
 
