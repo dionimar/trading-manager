@@ -205,7 +205,7 @@ class KrakenDF:
         df = self.transactions.reset_index()
         prices = self.prices.reset_index().drop(columns=["refid"])
 
-        df_prices = df.set_index(["time", "asset_buy"]).join(
+        df_prices = df.set_index(["time", "asset_buy"]).join( # Buy prices
             prices.rename(columns={"asset": "asset_buy"}).set_index(["time", "asset_buy"]),
             on=["time", "asset_buy"],
             how="left"
@@ -215,7 +215,7 @@ class KrakenDF:
                 "time_nearest": "time_nearest_buy",
                 "time_delta": "time_delta_buy"
             }
-        ).reset_index().set_index(["time", "asset_sell"]).join(
+        ).reset_index().set_index(["time", "asset_sell"]).join( # Sell prices
             prices.rename(columns={"asset": "asset_sell"}).set_index(["time", "asset_sell"]),
             on=["time", "asset_sell"],
             how="left"
@@ -225,7 +225,7 @@ class KrakenDF:
                 "time_nearest": "time_nearest_sell",
                 "time_delta": "time_delta_sell"
             }
-        ).reset_index().set_index(["time", "fee_on"]).join(
+        ).reset_index().set_index(["time", "fee_on"]).join( # Buy prices fee
             prices[["time", "asset", "price"]] \
                 .rename(columns={"asset": "fee_on", "price": "fee_price_buy"}) \
                 .set_index(["time", "fee_on"]),
@@ -245,7 +245,7 @@ class KrakenDF:
             on="refid_foundings",
             how="left"
         ).reset_index().set_index("refid").join(
-            df_prices[["price_buy"]],
+            df_prices[["price_buy", "fee_price_buy"]],
             on="refid",
             how="left"
         )
@@ -254,13 +254,14 @@ class KrakenDF:
         
         # buy costs comes from selling asset 
         df_inventory["buy_cost"] = df_inventory["amount_buy"] * df_inventory["price_buy"]
+        df_inventory["buy_fee_cost"] = df_inventory["fee"] * df_inventory["fee_price_buy"]
         # sell cost comes from foundings (how much we paid for buying them).
         # Instead of calculating from transaction time, we take the price from founding boughts
         df_inventory["sell_cost"] = df_inventory["quantity"] * df_inventory["price_sell"]
 
         df_inventory = df_inventory \
-            .reset_index()[["refid", "buy_cost", "sell_cost"]] \
-            .groupby(["refid", "buy_cost"]).sum().reset_index().set_index("refid")
+            .reset_index()[["refid", "buy_cost", "sell_cost", "buy_fee_cost"]] \
+            .groupby(["refid", "buy_cost", "buy_fee_cost"]).sum().reset_index().set_index("refid")
         return df_inventory.copy()
 
     def build_declarables(self):
