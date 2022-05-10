@@ -412,7 +412,8 @@ if __name__ == '__main__':
     report = krakendf.build_report(inventory=inventory, prices=prices)
     print(report.sort_values(by=["refid"]).to_string())
 
-    report.to_csv("report.xlsx")
+    report.to_excel("report.xlsx")
+    report.to_csv("report.csv")
     
     # krakendf.build_declarables() \
     #         .agg_declarables()
