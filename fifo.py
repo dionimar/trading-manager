@@ -74,9 +74,6 @@ class KrakenDF:
         print(df)
         self.transactions = self._build_fact()
         self.assets = self._get_assets(lst=df["asset"].tolist())
-        self.prices = None
-        self.declarable_assets = None
-        self.inventory = None
         logging.info(f"Found assets {self.assets}")
 
     @classmethod
@@ -111,7 +108,10 @@ class KrakenDF:
         return df_fees.drop(columns=["fee_sell", "fee_buy"])
 
     def _build_fact(self):
-        """Self joins to link assets sells with buys.
+        """Builds fact table buy joining itself based on sign of transaction. If ammount is positive 
+        it means the transaction is on buy side, otherwise is on sell side. Joins each sell with its 
+        corresponding buy. 
+        Keeps trask of fee applied and calculates its percentaje.
         """
         df = self.df[
             self.df["txid"].notnull()
@@ -135,6 +135,9 @@ class KrakenDF:
         return transactions
 
     def build_prices(self, prices=None):
+        """Builds each asset-time price from rawest info available, i.e., the report exported
+        from the exchange.
+        """
         df = self.df[["time", "asset"]].copy()
         df["time_key"] = df["time"]
         df.reset_index(inplace=True)
@@ -174,8 +177,7 @@ class KrakenDF:
             dfs.append(joined)
             
         _prices = pd.concat(dfs)
-        self.prices = _prices.copy()
-        return self
+        return _prices.copy()
 
     def build_inventory(self, strategy=InventoryFIFO):
         """Calculates sells distribution for available buys with FIFO method"""
@@ -192,22 +194,22 @@ class KrakenDF:
             )
             dfs.append(asset_founding)
         assets_foundings = pd.concat(dfs).set_index("refid")
-        self.inventory = self.transactions.join(assets_foundings, on="refid", how="left")
-        self.inventory.rename(columns={"idx": "refid_foundings"}, inplace=True)
-        self.inventory["quantity_pct"] = -100 * self.inventory["quantity"] / self.inventory["amount_sell"]
-        return self
+        inventory = self.transactions.join(assets_foundings, on="refid", how="left")
+        inventory.rename(columns={"idx": "refid_foundings"}, inplace=True)
+        inventory["quantity_pct"] = -100 * inventory["quantity"] / inventory["amount_sell"]
+        return inventory
 
-    def calculate_costs(self):
-        if self.inventory is None:
+    def build_report(self, inventory=None, prices=None):
+        if inventory is None:
             raise Exception("Inventory strategy must be computed before calculating costs.")
-        if self.prices is None:
+        if prices is None:
             raise Exception("No prices found to calculate costs.")
 
         df = self.transactions.reset_index()
-        prices = self.prices.reset_index().drop(columns=["refid"])
+        _prices = prices.reset_index().drop(columns=["refid"])
 
         df_prices = df.set_index(["time", "asset_buy"]).join( # Buy prices
-            prices.rename(columns={"asset": "asset_buy"}).set_index(["time", "asset_buy"]),
+            _prices.rename(columns={"asset": "asset_buy"}).set_index(["time", "asset_buy"]),
             on=["time", "asset_buy"],
             how="left"
         ).rename(
@@ -217,7 +219,7 @@ class KrakenDF:
                 "time_delta": "time_delta_buy"
             }
         ).reset_index().set_index(["time", "asset_sell"]).join( # Sell prices
-            prices.rename(columns={"asset": "asset_sell"}).set_index(["time", "asset_sell"]),
+            _prices.rename(columns={"asset": "asset_sell"}).set_index(["time", "asset_sell"]),
             on=["time", "asset_sell"],
             how="left"
         ).rename(
@@ -227,16 +229,14 @@ class KrakenDF:
                 "time_delta": "time_delta_sell"
             }
         ).reset_index().set_index(["time", "fee_on"]).join( # Buy prices fee
-            prices[["time", "asset", "price"]] \
+            _prices[["time", "asset", "price"]] \
                 .rename(columns={"asset": "fee_on", "price": "fee_price"}) \
                 .set_index(["time", "fee_on"]),
             on=["time", "fee_on"],
             how="left"
         ).reset_index().set_index("refid")
 
-        print(df_prices.sort_values("refid").to_string())
-
-        df_inventory = self.inventory.reset_index() \
+        df_inventory_report = inventory.reset_index() \
             .set_index("refid_foundings").join(
             df_prices.reset_index() \
                      .rename(
@@ -257,35 +257,44 @@ class KrakenDF:
             on="refid",
             how="left"
         )
-
-        print(df_inventory.sort_values("refid").to_string())
         
         # buy costs comes from selling asset 
-        df_inventory["buy_cost"] = df_inventory["amount_buy"] * df_inventory["price_buy"]
-        df_inventory["buy_fee_cost"] = df_inventory["fee_buy"] * df_inventory["fee_price_buy"]
+        df_inventory_report["buy_cost"] = \
+            df_inventory_report["amount_buy"] * df_inventory_report["price_buy"]
+        df_inventory_report["buy_fee_cost"] = \
+            df_inventory_report["fee_buy"] * df_inventory_report["fee_price_buy"]
         # sell cost comes from foundings (how much we paid for buying them).
         # Instead of calculating from transaction time, we take the price from founding boughts
-        df_inventory["sell_cost"] = df_inventory["quantity"] * df_inventory["price_sell"]
-        df_inventory["sell_fee_cost"] = \
-            (df_inventory["quantity_pct"] / 100) * df_inventory["fee_sell"] * df_inventory["fee_price_sell"]
+        df_inventory_report["sell_cost"] = \
+            df_inventory_report["quantity"] * df_inventory_report["price_sell"]
+        df_inventory_report["sell_fee_cost"] = \
+            (df_inventory_report["quantity_pct"] / 100) \
+            * df_inventory_report["fee_sell"] * df_inventory_report["fee_price_sell"]
 
-        df_inventory = df_inventory \
+        df_inventory_report_agg = df_inventory_report \
             .reset_index()[["refid", "buy_cost", "sell_cost", "buy_fee_cost", "sell_fee_cost"]] \
-            .groupby(["refid", "buy_cost", "buy_fee_cost"]).sum().reset_index().set_index("refid")
-        return df_inventory.copy()
+            .groupby(["refid", "buy_cost", "buy_fee_cost"]) \
+            .sum().reset_index().set_index("refid") \
+            .drop(columns=["buy_cost", "buy_fee_cost"])
 
-    def build_declarables(self):
-        if self.inventory is None:
+        clean_df = df_inventory_report.join(
+            df_inventory_report_agg, on="refid", how="left", rsuffix="_agg"
+        )
+        
+        return clean_df.copy()
+
+    def build_declarables(self, report=None):
+        if report is None:
             raise Exception("Inventory must be computed before declarables are computed")
         # Transactions from ZEUR to crypto are not declarable (it's just entering to crypto world)
         # Only declare changes in assets
-        self.declarable_assets = self.inventory[self.inventory["asset_sell"] != "ZEUR"].copy()
-        self.declarable_assets["gain"] = self.declarable_assets["sell_cost"] \
-            - self.declarable_assets["buy_cost"]
-        self.declarable_assets.sort_values(by="time", ascending=True)
+        declarable_assets = report[report["asset_sell"] != "ZEUR"].copy()
+        declarable_assets["gain"] = declarable_assets["sell_cost"] \
+            - declarable_assets["buy_cost"]
+        declarable_assets.sort_values(by="time", ascending=True)
         logging.info(
             "Built {} declarable assets".format(
-                self.declarable_assets.reset_index()[["refid"]].drop_duplicates().shape[0]
+                declarable_assets.reset_index()[["refid"]].drop_duplicates().shape[0]
             )
         )
         return self
@@ -386,22 +395,24 @@ if __name__ == '__main__':
 
 
     krakendf = KrakenDF.from_file("ledgers.csv")
-    
-    krakendf.build_inventory()
-    print("####################### inventory")
-    print(krakendf.inventory.sort_values(by=["refid"]).to_string())
-    krakendf.build_prices(prices=assets_prices)
 
     print("####################### transactions")
     print(krakendf.transactions.sort_values(by=["refid"]).to_string())
+    
+    inventory = krakendf.build_inventory()
+    print("####################### inventory")
+    print(inventory.sort_values(by=["refid"]).to_string())
+    
+    prices = krakendf.build_prices(prices=assets_prices)
 
     # print("####################### prices")
     # print(krakendf.prices.sort_values(by=["refid"]).to_string())
 
-    print("####################### costs")
-    df_costs = krakendf.calculate_costs()
-    print(df_costs.sort_values(by=["refid"]).to_string())
+    print("####################### report")
+    report = krakendf.build_report(inventory=inventory, prices=prices)
+    print(report.sort_values(by=["refid"]).to_string())
 
+    report.to_csv("report.xlsx")
     
     # krakendf.build_declarables() \
     #         .agg_declarables()
@@ -411,4 +422,4 @@ if __name__ == '__main__':
 
     
 
-    KrakenDFTester._test_fifo(krakendf)
+    # KrakenDFTester._test_fifo(krakendf)
