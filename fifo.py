@@ -193,7 +193,10 @@ class KrakenDF:
                 buys=buys, sells=sells, asset=asset
             )
             dfs.append(asset_founding)
-        assets_foundings = pd.concat(dfs).set_index("refid")
+        # Join with transactions to get times
+        assets_foundings = pd.concat(dfs).set_index("refid").join(
+            self.transactions[["time"]], on="refid", how="left"
+        ).rename(columns={"time": "time_founding"})
         inventory = self.transactions.join(assets_foundings, on="refid", how="left")
         inventory.rename(columns={"idx": "refid_foundings"}, inplace=True)
         inventory["quantity_pct"] = -100 * inventory["quantity"] / inventory["amount_sell"]
