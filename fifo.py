@@ -294,36 +294,31 @@ class KrakenDF:
         declarable_assets = report[report["asset_sell"] != "ZEUR"].copy()
         declarable_assets["gain"] = declarable_assets["buy_cost"] \
             - declarable_assets["sell_cost_agg"]
-        declarable_assets.drop(
-            columns=["fee", "fee_on", "fee_pct", "quantity", "fee_buy", "fee_sell"],
-            inplace=True
+        declarable_assets_ = declarable_assets.copy()
+        declarable_assets = declarable_assets_[[
+            "asset_buy", "asset_sell", "amount_buy", "amount_sell", "time", "time_founding",
+            "buy_cost", "buy_fee_cost", "sell_cost_agg", "sell_fee_cost_agg", "gain"
+        ]]
+        df_dates = declarable_assets.reset_index()[["asset_sell", "time", "time_founding"]] \
+            .groupby("asset_sell") \
+            .agg({"time": "max", "time_founding": "min"})
+        declarable_assets_ = declarable_assets.reset_index()[[
+            "asset_sell", "buy_cost", "buy_fee_cost", "sell_cost_agg", "sell_fee_cost_agg"
+        ]].drop_duplicates().groupby("asset_sell").sum()
+        aggregated = declarable_assets_.join(df_dates, how="left").rename(
+            columns={
+                "time": "sell_time",
+                "time_founding": "buy_time",
+                "sell_cost_agg": "sell_cost",
+                "sell_fee_cost_agg": "sell_fee_cost"
+            }
         )
         logging.info(
             "Built {} declarable assets".format(
-                declarable_assets.reset_index()[["refid"]].drop_duplicates().shape[0]
+                aggregated.shape[0]
             )
         )
-        return declarable_assets.sort_values(by="time", ascending=True)
-
-    def agg_declarables(self):
-        if self.declarable_assets is None:
-            raise Exception("Declarable assets must be computed before agregating them")
-        self.declarable_assets.drop(
-            columns=[
-                "refid_foundings",
-                "quantity",
-                "price_bought_EUR",
-                "sell_cost",
-                "buy_cost"
-            ],
-            inplace=True
-        )
-        self.declarable_assets.drop_duplicates(inplace=True)
-        self.declarable_assets = self.declarable_assets.reset_index()
-        self.declarable_assets = self.declarable_assets[
-            ~self.declarable_assets["refid"].str.startswith("Q")
-        ].set_index("refid")
-        return self
+        return aggregated
 
 
 class KrakenDFTester:
