@@ -194,9 +194,9 @@ class KrakenDF:
             )
             dfs.append(asset_founding)
         # Join with transactions to get times
-        assets_foundings = pd.concat(dfs).set_index("refid").join(
-            self.transactions[["time"]], on="refid", how="left"
-        ).rename(columns={"time": "time_founding"})
+        assets_foundings = pd.concat(dfs).set_index("idx").join(
+            self.transactions[["time"]], on="idx", how="left"
+        ).rename(columns={"time": "time_founding"}).reset_index().set_index("refid")
         inventory = self.transactions.join(assets_foundings, on="refid", how="left")
         inventory.rename(columns={"idx": "refid_foundings"}, inplace=True)
         inventory["quantity_pct"] = -100 * inventory["quantity"] / inventory["amount_sell"]
@@ -292,15 +292,18 @@ class KrakenDF:
         # Transactions from ZEUR to crypto are not declarable (it's just entering to crypto world)
         # Only declare changes in assets
         declarable_assets = report[report["asset_sell"] != "ZEUR"].copy()
-        declarable_assets["gain"] = declarable_assets["sell_cost"] \
-            - declarable_assets["buy_cost"]
-        declarable_assets.sort_values(by="time", ascending=True)
+        declarable_assets["gain"] = declarable_assets["buy_cost"] \
+            - declarable_assets["sell_cost_agg"]
+        declarable_assets.drop(
+            columns=["fee", "fee_on", "fee_pct", "quantity", "fee_buy", "fee_sell"],
+            inplace=True
+        )
         logging.info(
             "Built {} declarable assets".format(
                 declarable_assets.reset_index()[["refid"]].drop_duplicates().shape[0]
             )
         )
-        return self
+        return declarable_assets.sort_values(by="time", ascending=True)
 
     def agg_declarables(self):
         if self.declarable_assets is None:
@@ -418,7 +421,8 @@ if __name__ == '__main__':
     report.to_excel("report.xlsx")
     report.to_csv("report.csv")
     
-    # krakendf.build_declarables() \
+    declarables = krakendf.build_declarables(report=report)
+    print(declarables)
     #         .agg_declarables()
 
     # df = krakendf.declarable_assets.sort_values(by=["asset_buy", "time"])
