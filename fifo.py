@@ -313,6 +313,7 @@ class KrakenDF:
                 "sell_fee_cost_agg": "sell_fee_cost"
             }
         )
+        aggregated["gain"] = aggregated["buy_cost"] - aggregated["sell_cost"]
         logging.info(
             "Built {} declarable assets".format(
                 aggregated.shape[0]
@@ -323,14 +324,14 @@ class KrakenDF:
 
 class KrakenDFTester:
     @staticmethod
-    def _test_fifo(krakenDF=None):
+    def _test_fifo_founding_quantity(inventory=None, transactions=None):
         """Checks if quantity used for referencing sells is at most
         the amount_buy in total
         """
-        if krakenDF.inventory is None:
+        if inventory is None:
             raise Exception("Inventory must be computed before tested")
-        df_ref = krakenDF.inventory.reset_index()[["refid_foundings", "quantity"]]
-        df_founds = krakenDF.transactions.reset_index()[["refid", "amount_buy"]] \
+        df_ref = inventory.reset_index()[["refid_foundings", "quantity"]]
+        df_founds = transactions.reset_index()[["refid", "amount_buy"]] \
             .drop_duplicates()
         df_ref = df_ref.groupby("refid_foundings") \
                        .sum() \
@@ -348,7 +349,31 @@ class KrakenDFTester:
             logging.error(
                 "Foundings distribution test failing. The quantity of founds used error"
             )
+            raise Exception("Transactions using more founds than available")
         logging.info("Test for FIFO distribution passed.")
+        return True
+
+    @staticmethod
+    def _test_fifo_timings_coherence(inventory=None, transactions=None):
+        """Checks if time is coherent, i.e., referenced transactions appear
+        early in the book
+        """
+        if inventory is None:
+            raise Exception("Inventory needed")
+        df_ref = inventory \
+            .reset_index()[["refid", "refid_foundings", "time", "time_founding"]]
+        for idx, item in df_ref.iterrows():
+            if item["time"] <= item["time_founding"]:
+                logging.error(
+                    "Found error on founding timings. Transaction references a future transaction as founding."
+                )
+                raise Exception("Transaction founding reference failed (referencing future transaction)")
+        logging.info("Test for FIFO timings passed.")
+        return True
+
+    @staticmethod
+    def _test_fifo_total_transaction_quantity(inventory=None, transactions=None):
+        pass
 
     @staticmethod
     def _test_timestamp_conversion(df=None):
@@ -401,28 +426,34 @@ if __name__ == '__main__':
     print(krakendf.transactions.sort_values(by=["refid"]).to_string())
     
     inventory = krakendf.build_inventory()
-    print("####################### inventory")
-    print(inventory.sort_values(by=["refid"]).to_string())
+    #print("####################### inventory")
+    #print(inventory.sort_values(by=["refid"]).to_string())
     
     prices = krakendf.build_prices(prices=assets_prices)
 
     # print("####################### prices")
-    # print(krakendf.prices.sort_values(by=["refid"]).to_string())
+    # print(prices.sort_values(by=["refid"]).to_string())
 
-    print("####################### report")
+    #print("####################### report")
     report = krakendf.build_report(inventory=inventory, prices=prices)
-    print(report.sort_values(by=["refid"]).to_string())
+    #print(report.sort_values(by=["refid"]).to_string())
 
-    report.to_excel("report.xlsx")
-    report.to_csv("report.csv")
+    #report.to_excel("report.xlsx")
+    #report.to_csv("report.csv")
     
-    declarables = krakendf.build_declarables(report=report)
-    print(declarables)
-    #         .agg_declarables()
+    #declarables = krakendf.build_declarables(report=report)
+    #print(declarables)
+
+    #declarables.to_excel("declarables.xlsx")
 
     # df = krakendf.declarable_assets.sort_values(by=["asset_buy", "time"])
     # print(df.to_string())
 
     
 
-    # KrakenDFTester._test_fifo(krakendf)
+    KrakenDFTester._test_fifo_founding_quantity(
+        inventory=report, transactions=krakendf.transactions
+    )
+    KrakenDFTester._test_fifo_timings_coherence(
+        inventory=report, transactions=krakendf.transactions
+    )
