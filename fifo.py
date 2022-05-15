@@ -287,6 +287,9 @@ class KrakenDF:
         return clean_df.copy()
 
     def build_declarables(self, report=None):
+        """Builds aggregated (by asset sell) transactions. Buy, sell and gain includes fee prices.
+        Fees columns only included to know how much, no operation needed.
+        """
         if report is None:
             raise Exception("Inventory must be computed before declarables are computed")
         # Transactions from ZEUR to crypto are not declarable (it's just entering to crypto world)
@@ -313,6 +316,8 @@ class KrakenDF:
                 "sell_fee_cost_agg": "sell_fee_cost"
             }
         )
+        aggregated["buy_cost"] = aggregated["buy_cost"] + aggregated["buy_fee_cost"]
+        aggregated["sell_cost"] = aggregated["sell_cost"] + aggregated["sell_fee_cost"]
         aggregated["gain"] = aggregated["buy_cost"] - aggregated["sell_cost"]
         logging.info(
             "Built {} declarable assets".format(
@@ -438,13 +443,13 @@ if __name__ == '__main__':
     report = krakendf.build_report(inventory=inventory, prices=prices)
     #print(report.sort_values(by=["refid"]).to_string())
 
-    #report.to_excel("report.xlsx")
+    report.to_excel("report.xlsx")
     #report.to_csv("report.csv")
     
-    #declarables = krakendf.build_declarables(report=report)
+    declarables = krakendf.build_declarables(report=report)
     #print(declarables)
 
-    #declarables.to_excel("declarables.xlsx")
+    declarables.to_excel("declarables.xlsx")
 
     # df = krakendf.declarable_assets.sort_values(by=["asset_buy", "time"])
     # print(df.to_string())
