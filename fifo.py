@@ -90,7 +90,8 @@ class KrakenDF:
         return KrakenDF(df=file_df)
 
     def _get_assets(self, lst=None):
-        return list(set(filter(lambda x: not x.endswith(".S"), lst)))
+        return list(set(lst))
+        #return list(set(filter(lambda x: not x.endswith(".S"), lst)))
 
     def _select_fee(self, df=None):
         df_fees = df.copy()
@@ -326,6 +327,35 @@ class KrakenDF:
         )
         return aggregated
 
+    def build_staking_rewards(self, prices=None):
+        """Builds all rewards from staked assets, in EUR and aggregated."""
+        if prices is None:
+            raise Exception("Prices must be provided")
+
+        staking_asset_names = list(filter(lambda x: x.endswith(".S"), self.assets))
+        logging.info(
+            "Detected {} staked assets, processing rewards".format(staking_asset_names)
+        )
+        staking_data = self.df[
+            (self.df["asset"].str.endswith(".S")) & \
+            (self.df["type"] == "staking")
+        ].join(
+            prices[["price", "time_nearest"]],
+            on="refid",
+            how="left"
+        )
+        staking_data["reward_price"] = \
+            staking_data["amount"] * staking_data["price"]
+        agg_staking_data = staking_data.reset_index()[["asset", "reward_price"]] \
+            .groupby("asset").sum()
+        ret = staking_data.reset_index().set_index("asset").join(
+            agg_staking_data,
+            on="asset",
+            how="left",
+            rsuffix="_total"
+        ).reset_index().set_index("refid")
+        return ret
+
 
 class KrakenDFTester:
     @staticmethod
@@ -411,6 +441,7 @@ if __name__ == '__main__':
         "USDT": "../Kraken_OHLCVT/USDTEUR_1.csv",
         "GRT": "../Kraken_OHLCVT/GRTEUR_1.csv",
         "ADA": "../Kraken_OHLCVT/ADAEUR_1.csv",
+        "ADA.S": "../Kraken_OHLCVT/ADAEUR_1.csv",
         "OGN": "../Kraken_OHLCVT/OGNEUR_1.csv",
         "OXT": "../Kraken_OHLCVT/OXTEUR_1.csv",
         "REN": "../Kraken_OHLCVT/RENEUR_1.csv",
@@ -443,18 +474,19 @@ if __name__ == '__main__':
     report = krakendf.build_report(inventory=inventory, prices=prices)
     #print(report.sort_values(by=["refid"]).to_string())
 
-    report.to_excel("report.xlsx")
+    report.to_excel("report_2.xlsx")
     #report.to_csv("report.csv")
     
     declarables = krakendf.build_declarables(report=report)
     #print(declarables)
 
-    declarables.to_excel("declarables.xlsx")
+    declarables.to_excel("declarables_2.xlsx")
 
     # df = krakendf.declarable_assets.sort_values(by=["asset_buy", "time"])
     # print(df.to_string())
 
-    
+    staking_rewards = krakendf.build_staking_rewards(prices=prices)
+    staking_rewards.to_excel("staking_rewards.xlsx")
 
     KrakenDFTester._test_fifo_founding_quantity(
         inventory=report, transactions=krakendf.transactions
