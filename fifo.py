@@ -3,6 +3,8 @@ from datetime import datetime
 from dateutil.parser import parse
 import pandas as pd
 import logging
+import requests
+import time
 
 
 def load_file(filename=None, **kwargs):
@@ -66,6 +68,54 @@ class InventoryFIFO:
                     quantity_to_fill -= item["amount_buy"]
         return list(filter(lambda x: abs(x["quantity"]) > 0, assignment))
 
+
+_PAIR_NAMES = {
+    "XLTC": "ltceur",
+    "EUR.HOLD": None,
+    "ZEUR": None,
+    "XETH": "etheur",
+    "REN": "reneur",
+    "OXT": "oxteur",
+    "USDT": "usdteur",
+    "BNC": "bnceur",
+    "XXBT": "xbteur",
+    "GRT": "grteur",
+    "OGN": "ogneur",
+    "ADA.S": "adaeur",
+    "ADA": "adaeur"
+}
+
+
+def _get_price_asset_ts(asset, ts, retries=0):
+    _pair = _PAIR_NAMES[asset]
+    if _pair is None:
+        return 1.0
+    price_response = requests.get(
+        f"https://api.kraken.com/0/public/Trades?pair={_pair}&since={ts}"
+    ).text
+    try:
+        price_response = json.loads(price_response)
+        # get dict key (pair name)
+        _ = price_response["result"].pop("last")
+        _key = list(price_response["result"].keys())[0]
+        print(_key)
+        price = price_response["result"][_key]
+        prices = pd.DataFrame(price, columns=["price", "volume", "time", "buy_sell", "market_limit", "misc", "id"])
+        return float(prices[prices["time"] == prices["time"].min()].reset_index(drop=True).iloc[0].price)
+    except:
+        print(price_response)
+        if retries < 3:
+            time.sleep(retries * 5)
+            return _get_price_asset_ts(asset, ts, retries + 1)
+        logging.error(f"No price could be retrieved for asset {asset} at {ts}")
+        return None
+
+
+def get_price_asset_ts(asset, ts):
+    price = _get_price_asset_ts(asset=asset, ts=ts, retries=0)
+    print(price)
+    return price
+    
 
 
 class KrakenDF:
@@ -150,35 +200,48 @@ class KrakenDF:
         df.reset_index(inplace=True)
         df.drop(columns=["time_key"], inplace=True)
         KrakenDFTester._test_timestamp_conversion(df=df)
-        dfs = []
-        
-        for asset in self.assets:
-            df_left = df[df["asset"] == asset].set_index("timestamp")
-            df_right = prices[prices["asset"] == asset] \
-                .drop(columns=["asset", "open", "high", "low", "volume", "trades"]) \
-                .reset_index(drop=True) \
-                .rename(columns={"close": "price"})
-            df_right["timestamp_nearest"] = df_right["timestamp"]
-            df_right.set_index("timestamp", inplace=True)
-            joined = pd.merge_asof(df_left, df_right, on="timestamp", direction="nearest")
-            joined.set_index("refid", inplace=True)
-            joined["time_nearest"] = pd.to_datetime(
-                joined["timestamp_nearest"].apply(lambda x: pd.Timestamp.fromtimestamp(x)),
-                utc=False
-            )
-            if asset == "ZEUR":
-                # Clean time_joined and price_time_diff for asset EUR
-                joined["time_delta"] = 0
-                joined["time_nearest"] = joined["time"]
-            else:
-                joined["time_delta"] = joined["time"] - joined["time_nearest"]
-                joined["time_delta"] = joined["time_delta"].apply(lambda x: x.total_seconds())
-            joined.drop(columns=["timestamp_nearest", "timestamp"], inplace=True)
-            joined["time_delta"] = joined["time_delta"].astype("int")
-            dfs.append(joined)
+
+        for idx, row in df.iterrows():
+            df.loc[idx, "price"] = get_price_asset_ts(row["asset"], row["timestamp"])
+        df["time_delta"] = None
+        df["time_nearest"] = None
+        # print(self.assets)
+        # for asset in self.assets:
+        #     df_left = df[df["asset"] == asset].set_index("timestamp")
+
+        #     # Here call request api to get prices
+        #     for idx, asset in df_left.iterrows():
+        #         print(idx, asset["asset"])
+        #         price = get_price_asset_ts(asset["asset"], idx)
+        #         print(price)
+        #     print(df_left)
+
             
-        _prices = pd.concat(dfs)
-        return _prices.copy()
+        #     # df_right = prices[prices["asset"] == asset] \
+        #     #     .drop(columns=["asset", "open", "high", "low", "volume", "trades"]) \
+        #     #     .reset_index(drop=True) \
+        #     #     .rename(columns={"close": "price"})
+        #     # df_right["timestamp_nearest"] = df_right["timestamp"]
+        #     # df_right.set_index("timestamp", inplace=True)
+        #     joined = pd.merge_asof(df_left, df_right, on="timestamp", direction="nearest")
+        #     joined.set_index("refid", inplace=True)
+        #     joined["time_nearest"] = pd.to_datetime(
+        #         joined["timestamp_nearest"].apply(lambda x: pd.Timestamp.fromtimestamp(x)),
+        #         utc=False
+        #     )
+        #     if asset == "ZEUR":
+        #         # Clean time_joined and price_time_diff for asset EUR
+        #         joined["time_delta"] = 0
+        #         joined["time_nearest"] = joined["time"]
+        #     else:
+        #         joined["time_delta"] = joined["time"] - joined["time_nearest"]
+        #         joined["time_delta"] = joined["time_delta"].apply(lambda x: x.total_seconds())
+        #     joined.drop(columns=["timestamp_nearest", "timestamp"], inplace=True)
+        #     joined["time_delta"] = joined["time_delta"].astype("int")
+        #     dfs.append(joined)
+            
+        # _prices = pd.concat(dfs)
+        return df
 
     def build_inventory(self, strategy=InventoryFIFO):
         """Calculates sells distribution for available buys with FIFO method"""
@@ -437,23 +500,23 @@ if __name__ == '__main__':
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
     
-    assets_files = {
-        "USDT": "../Kraken_OHLCVT/USDTEUR_1.csv",
-        "GRT": "../Kraken_OHLCVT/GRTEUR_1.csv",
-        "ADA": "../Kraken_OHLCVT/ADAEUR_1.csv",
-        "ADA.S": "../Kraken_OHLCVT/ADAEUR_1.csv",
-        "OGN": "../Kraken_OHLCVT/OGNEUR_1.csv",
-        "OXT": "../Kraken_OHLCVT/OXTEUR_1.csv",
-        "REN": "../Kraken_OHLCVT/RENEUR_1.csv",
-        "XXBT": "../Kraken_OHLCVT/XBTEUR_1.csv",
-        "XETH": "../Kraken_OHLCVT/ETHEUR_1.csv",
-        "BNC": "../Kraken_OHLCVT/BNCEUR_1.csv",
-        "XLTC": "../Kraken_OHLCVT/LTCEUR_1.csv"
-    }
+    # assets_files = {
+    #     "USDT": "../Kraken_OHLCVT/USDTEUR_1.csv",
+    #     "GRT": "../Kraken_OHLCVT/GRTEUR_1.csv",
+    #     "ADA": "../Kraken_OHLCVT/ADAEUR_1.csv",
+    #     "ADA.S": "../Kraken_OHLCVT/ADAEUR_1.csv",
+    #     "OGN": "../Kraken_OHLCVT/OGNEUR_1.csv",
+    #     "OXT": "../Kraken_OHLCVT/OXTEUR_1.csv",
+    #     "REN": "../Kraken_OHLCVT/RENEUR_1.csv",
+    #     "XXBT": "../Kraken_OHLCVT/XBTEUR_1.csv",
+    #     "XETH": "../Kraken_OHLCVT/ETHEUR_1.csv",
+    #     "BNC": "../Kraken_OHLCVT/BNCEUR_1.csv",
+    #     "XLTC": "../Kraken_OHLCVT/LTCEUR_1.csv"
+    # }
 
 
-    _prices = build_assets_prices(assets_dict=assets_files)
-    assets_prices = pd.concat([_prices, AssetZEUR.prices()])
+    # _prices = build_assets_prices(assets_dict=assets_files)
+    # assets_prices = pd.concat([_prices, AssetZEUR.prices()])
 
 
     krakendf = KrakenDF.from_file("ledgers.csv")
@@ -462,13 +525,13 @@ if __name__ == '__main__':
     print(krakendf.transactions.sort_values(by=["refid"]).to_string())
     
     inventory = krakendf.build_inventory()
-    #print("####################### inventory")
-    #print(inventory.sort_values(by=["refid"]).to_string())
+    print("####################### inventory")
+    print(inventory.sort_values(by=["refid"]).to_string())
     
-    prices = krakendf.build_prices(prices=assets_prices)
+    prices = krakendf.build_prices(prices=None)
 
-    # print("####################### prices")
-    # print(prices.sort_values(by=["refid"]).to_string())
+    print("####################### prices")
+    print(prices.sort_values(by=["refid"]).to_string())
 
     #print("####################### report")
     report = krakendf.build_report(inventory=inventory, prices=prices)
