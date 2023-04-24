@@ -249,7 +249,7 @@ class KrakenDF:
         #     dfs.append(joined)
             
         # _prices = pd.concat(dfs)
-        return df
+        return df.reset_index(drop=True)
 
     def build_inventory(self, strategy=InventoryFIFO):
         """Calculates sells distribution for available buys with FIFO method"""
@@ -281,10 +281,11 @@ class KrakenDF:
             raise Exception("No prices found to calculate costs.")
 
         df = self.transactions.reset_index()
-        _prices = prices.reset_index().drop(columns=["refid"])
+        # _prices = prices.reset_index(drop=True).drop(columns=["refid"])
+        _prices = prices[["asset", "time", "price"]].reset_index(drop=True).drop_duplicates()
 
-        df_prices = df.set_index(["time", "asset_buy"]).join( # Buy prices
-            _prices.rename(columns={"asset": "asset_buy"}).set_index(["time", "asset_buy"]),
+        df_prices = df.merge( # Buy prices
+            _prices.rename(columns={"asset": "asset_buy"}),
             on=["time", "asset_buy"],
             how="left"
         ).rename(
@@ -293,8 +294,8 @@ class KrakenDF:
                 "time_nearest": "time_nearest_buy",
                 "time_delta": "time_delta_buy"
             }
-        ).reset_index().set_index(["time", "asset_sell"]).join( # Sell prices
-            _prices.rename(columns={"asset": "asset_sell"}).set_index(["time", "asset_sell"]),
+        ).reset_index(drop=True).merge( # Sell prices
+            _prices.rename(columns={"asset": "asset_sell"}),
             on=["time", "asset_sell"],
             how="left"
         ).rename(
@@ -303,32 +304,29 @@ class KrakenDF:
                 "time_nearest": "time_nearest_sell",
                 "time_delta": "time_delta_sell"
             }
-        ).reset_index().set_index(["time", "fee_on"]).join( # Buy prices fee
+        ).reset_index(drop=True).merge( # Buy prices fee
             _prices[["time", "asset", "price"]] \
-                .rename(columns={"asset": "fee_on", "price": "fee_price"}) \
-                .set_index(["time", "fee_on"]),
+                .rename(columns={"asset": "fee_on", "price": "fee_price"}),
             on=["time", "fee_on"],
             how="left"
-        ).reset_index().set_index("refid")
+        ).reset_index(drop=True)
 
-        df_inventory_report = inventory.reset_index() \
-            .set_index("refid_foundings").join(
-            df_prices.reset_index() \
-                     .rename(
-                         columns={"refid": "refid_foundings"}
-                     ).set_index("refid_foundings")[["price_buy", "fee_price", "fee"]] \
-                     .rename(
-                         columns={
-                             "price_buy": "price_sell",
-                             "fee_price": "fee_price_sell",
-                             "fee": "fee_sell"
-                         }
-                     ),
+        df_inventory_report = inventory.reset_index(drop=False).merge(
+            df_prices.rename(
+                columns={"refid": "refid_foundings"}
+            )[["price_buy", "fee_price", "fee", "refid_foundings"]] \
+                .rename(
+                    columns={
+                        "price_buy": "price_sell",
+                        "fee_price": "fee_price_sell",
+                        "fee": "fee_sell"
+                    }
+                ),
             on="refid_foundings",
             how="left"
-        ).reset_index().set_index("refid").join(
-            df_prices[["price_buy", "fee_price", "fee"]] \
-            .rename(columns={"fee_price": "fee_price_buy", "fee": "fee_buy"}),
+        ).merge(
+            df_prices[["price_buy", "fee_price", "fee", "refid"]] \
+                .rename(columns={"fee_price": "fee_price_buy", "fee": "fee_buy"}),
             on="refid",
             how="left"
         )
@@ -356,7 +354,7 @@ class KrakenDF:
             df_inventory_report_agg, on="refid", how="left", rsuffix="_agg"
         )
         
-        return clean_df.copy()
+        return clean_df
 
     def build_declarables(self, report=None):
         """Builds aggregated (by asset sell) transactions. Buy, sell and gain includes fee prices.
@@ -506,7 +504,7 @@ def build_assets_prices(assets_dict=None):
 if __name__ == '__main__':
 
     logger = logging.getLogger()
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     
     # assets_files = {
     #     "USDT": "../Kraken_OHLCVT/USDTEUR_1.csv",
