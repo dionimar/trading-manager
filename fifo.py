@@ -189,6 +189,12 @@ class KrakenDF:
         """Builds each asset-time price from rawest info available, i.e., the report exported
         from the exchange.
         """
+        if prices is not None:
+            df = pd.read_csv(prices)
+            df["time"] = pd.to_datetime(df["time"])
+            df["time_nearest"] = pd.to_datetime(df["time_nearest"])
+            return df
+            
         df = self.df[["time", "asset"]].copy()
         df["time_key"] = df["time"]
         df.reset_index(inplace=True)
@@ -204,7 +210,9 @@ class KrakenDF:
         for idx, row in df.iterrows():
             df.loc[idx, "price"] = get_price_asset_ts(row["asset"], row["timestamp"])
         df["time_delta"] = None
-        df["time_nearest"] = None
+        df["time_nearest"] = df["time"]
+        df = df.drop(columns=["timestamp"])
+        df["time"] = pd.to_datetime(df["time"])
         # print(self.assets)
         # for asset in self.assets:
         #     df_left = df[df["asset"] == asset].set_index("timestamp")
@@ -528,10 +536,14 @@ if __name__ == '__main__':
     print("####################### inventory")
     print(inventory.sort_values(by=["refid"]).to_string())
     
-    prices = krakendf.build_prices(prices=None)
-
+    prices = krakendf.build_prices(prices="prices.csv")
     print("####################### prices")
     print(prices.sort_values(by=["refid"]).to_string())
+    # prices.to_csv("prices.csv", header=True)
+
+    # from IPython import embed
+
+    # embed()
 
     #print("####################### report")
     report = krakendf.build_report(inventory=inventory, prices=prices)
